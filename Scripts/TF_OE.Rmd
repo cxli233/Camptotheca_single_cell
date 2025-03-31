@@ -1,0 +1,1347 @@
+---
+title: "TF_OE"
+author: "Chenxin Li"
+date: "2024-12-16"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Packages
+```{r}
+library(tidyverse)
+library(readxl)
+
+library(DESeq2)
+library(Seurat)
+
+library(RColorBrewer)
+library(viridis)
+library(rcartocolor)
+
+library(patchwork)
+
+set.seed(666)
+```
+
+# Data 
+## Func annotation
+```{r}
+func_anno <- read_delim("../../CRO_v3/Data/cro_v3_anno/cro_v3.functional_annotation.txt",
+                        delim = "\t", col_names = F)
+```
+## Single cell dataset
+```{r}
+CRO_RNA <- readRDS("../../CRO_multiome/Results/R_output/CRO_RNA.Rds")
+CRO_RNA
+```
+```{r}
+leaf_cell_type_assignment <- data.frame(
+  cluster = c(0:15)
+) %>% 
+  mutate(cell_type = case_when(
+    cluster == 0 | 
+      cluster == 1 | 
+      cluster == 3 | 
+      cluster ==7  ~ "Mesophyll",
+    cluster == 2 | 
+      cluster == 5 ~ "Epidermis",
+    cluster == 12 ~ "Guard cells",
+    cluster == 11 |
+      cluster == 6 |
+      cluster == 10 |
+      cluster == 14 |
+      cluster == 15  ~ "Vasculature",
+    cluster == 13 ~ "IPAP",
+      cluster == 8 ~ "Idioblast",
+    T ~ "Unassigned"
+  )) %>% 
+  mutate(cell_type = factor(cell_type, 
+                            levels = c(
+                              "Mesophyll", "Epidermis", "Guard cells",
+                              "Vasculature", 
+                              "IPAP", "Idioblast", "Unassigned"
+                            ))) %>% 
+ mutate(cluster = factor(cluster, levels = c(
+    "0", "1", "3", "7", 
+    "2","5", 
+    "12",
+    "11", "6", "10", "14", "15",
+    "13", "8",
+    "4", "9"
+  )))
+
+Leaf_cell_type_strip <- leaf_cell_type_assignment %>% 
+  ggplot(aes(x = cluster, y = "" )) +
+  geom_tile(aes(fill = cell_type)) +
+  scale_fill_manual(values = c(brewer.pal(6, "Accent"), "grey80")) +
+  labs(fill = "Cell type") +
+  theme_void() +
+  theme(
+    legend.position = "bottom" ,
+    text = element_text(size = 14)
+  )
+
+#Leaf_cell_type_strip
+```
+
+
+
+## Metadata - TAMU 
+```{r}
+TAMU_metadata <- read_excel("../Data/11Sept24_24441Bue_catharanthus_plate_layout.xlsx")
+
+TAMU_metadata <- TAMU_metadata %>% 
+  select(library_name, sample_name, biological_replicate) %>% 
+  #filter(str_detect(sample_name, "Purple|Sun") == F)
+  mutate(ID = 1:45)
+
+head(TAMU_metadata)
+```
+
+## kallisto out 
+```{r}
+TAMU_outs <- list.files("../Results/kallisto_out/abundance_est/", 
+                        pattern = "*.tsv", full.names = T)
+
+TAMU_data <- purrr::map(.x = TAMU_outs, .f = read_delim, 
+                        delim = "\t", col_types = cols()) %>% 
+  bind_rows(.id = "ID") %>%
+  mutate(ID = as.numeric(ID)) %>% 
+  inner_join(TAMU_metadata, by = "ID") %>% 
+  filter(str_detect(sample_name, "Purple|Sun") == F)
+
+head(TAMU_data)
+```
+```{r}
+TAMU_data %>% 
+  group_by(sample_name) %>% 
+  dplyr::count()
+```
+
+# Check transgene expression and edit metadata 
+
+1. IDM1: 05G006800
+2. IDM4: 02G002580
+3. BIS1: 08G020500
+4. IDB1: 04G007340
+
+```{r}
+transgene_exp <- TAMU_data %>% 
+  filter(str_detect(target_id, "CRO") == F |
+           str_detect(target_id, "05G006800|02G002580|08G020500|04G007340")) %>% 
+  mutate(treatment = str_sub(sample_name, end = 1)) %>% 
+  mutate(sample_ID = str_sub(sample_name, end = 2)) %>% 
+  mutate(target_id.f = case_when(
+    str_detect(target_id, "TT8") ~ 1,                # A
+    str_detect(target_id, "CRO_04G007340.2") ~ 2,    # B
+    str_detect(target_id, "CaBIS") ~ 3,              # C
+    str_detect(target_id, "CRO_08G020500.1") ~ 4,    # D
+    str_detect(target_id, "CRO_05G006800.1") ~ 5,    # E
+    str_detect(target_id, "CaMYB123") ~ 6,           # F
+    str_detect(target_id, "CRO_02G002580.1") ~ 7,    # G
+    str_detect(target_id, "CaMYB5") ~ 8,             # H
+    str_detect(target_id, "AmCyan") ~ 9
+  )) %>% 
+    mutate(tag = case_when(
+    str_detect(target_id, "TT8") ~ "CaTT8",                # A
+    str_detect(target_id, "CRO_04G007340.2") ~ "CrIDB1",    # B
+    str_detect(target_id, "CaBIS") ~ "CaBIS",              # C
+    str_detect(target_id, "CRO_08G020500.1") ~ "CrBIS1",    # D
+    str_detect(target_id, "CRO_05G006800.1") ~ "CrIDM1",    # E
+    str_detect(target_id, "CaMYB123") ~ "CaMYB123",           # F
+    str_detect(target_id, "CRO_02G002580.1") ~ "CrIDM4",    # G
+    str_detect(target_id, "CaMYB5") ~ "CaMYB5",             # H
+    str_detect(target_id, "AmCyan") ~ "AmCyan"
+  )) 
+
+head(transgene_exp)
+```
+
+* A: CaTT8
+* B: IDB1
+* C: CaBIS
+* D: BIS1 
+* E: IDM1
+* F: CaMYB123
+* G: IDM4
+* H: CaMYB5
+* I: IDM1 + IDB1
+* J: CaMYB5 + IDB1
+* K: CaTT8 + IDM1
+* L: CaTT8 + CaMYB123
+* M: Ctrl 
+
+```{r}
+transgene_exp %>% 
+  mutate(tag = reorder(tag, -target_id.f)) %>% 
+  ggplot(aes(x = sample_ID, y = tag)) +
+  facet_grid(.~treatment, scales = "free", space = "free") +
+  geom_tile(aes(fill = log10(tpm + 1))) +
+  scale_fill_gradientn(colors = brewer.pal(9, "YlGnBu")) +
+  labs(x = "Library",
+       y = "Genes\noverexpressed",
+       fill = "logTPM") +
+  theme_classic() +
+  theme(legend.key.width = unit(0.8, "lines"),
+        legend.key.height = unit(0.8, "lines"),
+        legend.position = "top",
+        axis.text.x = element_blank(),
+        axis.text = element_text(color = "black"),
+        axis.text.y = element_text(hjust = 0.5, face = "italic")
+        )
+
+ggsave("../Results/R_output/TF_OE_overview.svg", height = 2.8, width = 5)
+ggsave("../Results/R_output/TF_OE_overview.png", height = 2.8, width = 5)
+```
+```{r}
+transgene_exp %>% 
+  mutate(tag = reorder(tag, -target_id.f)) %>% 
+  ggplot(aes(x = sample_ID, y = tag)) +
+  facet_grid(.~treatment, scales = "free", space = "free") +
+  geom_tile(aes(fill = log10(tpm + 1))) +
+  scale_fill_gradientn(colors = brewer.pal(9, "YlGnBu")) +
+  labs(x = "Library",
+       y = "Genes\noverexpressed",
+       fill = "logTPM") +
+  theme_classic() +
+  theme(legend.key.width = unit(0.8, "lines"),
+        legend.key.height = unit(0.8, "lines"),
+        legend.position = "top",
+        axis.text.x = element_blank(),
+        axis.text = element_text(color = "black"),
+        axis.text.y = element_text(hjust = 0.5, face = "italic"),
+        #strip.background = element_rect(color = NA)
+        )
+
+ggsave("../Results/R_output/TF_OE_overview2.svg", height = 5, width = 4)
+ggsave("../Results/R_output/TF_OE_overview2.png", height = 5, width = 4)
+```
+
+
+## Decorate metadata
+```{r}
+TAMU_metadata_nice <- TAMU_metadata %>% 
+  filter(str_detect(sample_name, "Purple|Sun") == F) %>% 
+  mutate(treatment = str_sub(sample_name, end = 1)) %>% 
+  mutate(sample_ID = str_sub(sample_name, end = 2)) %>% 
+  mutate(treatment_detail = case_when(
+    str_detect(treatment, "A") ~ "CaTT8",               
+    str_detect(treatment, "B") ~ "CrIDB1",    
+    str_detect(treatment, "C") ~ "CaBIS",             
+    str_detect(treatment, "D") ~ "CrBIS1",    
+    str_detect(treatment, "E") ~ "CrIDM1",    
+    str_detect(treatment, "F") ~ "CaMYB123",         
+    str_detect(treatment, "G") ~ "CrIDM4",    
+    str_detect(treatment, "H") ~ "CaMYB5",           
+    str_detect(treatment, "I") ~ "CrIDB1+CrIDM1", 
+    str_detect(treatment, "J") ~ "CrIDB1+CaMYB123", 
+    str_detect(treatment, "K") ~ "CaTT8+CrIDM1",
+    str_detect(treatment, "L") ~ "CaTT8+CaMYB123",
+    str_detect(treatment, "M") ~ "AmCyan"
+  )) 
+  
+
+TAMU_metadata_nice
+```
+
+# PCA 
+```{r}
+tpm_wide <- TAMU_data %>% 
+  mutate(sample_ID = str_sub(sample_name, end = 2)) %>% 
+  mutate(logTPM = log10(tpm+1)) %>% 
+  dplyr::select(target_id, logTPM, sample_ID) %>% 
+  pivot_wider(names_from = sample_ID, values_from = logTPM) %>% 
+  as.data.frame()
+
+row.names(tpm_wide) <- tpm_wide$target_id
+head(tpm_wide)[,1:6]
+
+write_excel_csv(tpm_wide %>% 
+                  dplyr::rename(gene_ID = target_id), 
+                "../Results/R_output/TF_OE_gene_exp_matrix.csv")
+```
+
+```{r}
+my_pca <- prcomp(t(tpm_wide[, -1]))
+pc_importance <- as.data.frame(t(summary(my_pca)$importance))
+head(pc_importance, 20)
+```
+```{r}
+PCA_coord <- my_pca$x[, 1:10] %>% 
+  as.data.frame() %>% 
+  mutate(sample_ID = row.names(.)) %>% 
+  full_join(TAMU_metadata_nice, by = "sample_ID") 
+
+head(PCA_coord)
+```
+```{r}
+PCA_coord %>% 
+  ggplot(aes(x = PC1, y = PC2)) +
+  geom_point(aes(fill = treatment), color = "grey20", shape = 21, size = 3, alpha = 0.8) +
+  ggrepel::geom_text_repel(aes(label = sample_ID)) +
+  # scale_fill_manual(
+  #   values = c("grey80", "violetred4", "tomato1")
+  # ) +
+ # labs(x = paste("PC1 (", pc_importance[1, 2] %>% signif(3)*100, "% of Variance)", sep = ""), 
+ #      y = paste("PC2 (", pc_importance[2, 2] %>% signif(3)*100, "% of Variance)", sep = ""),
+  #     fill = NULL) +  
+  theme_bw() +
+  theme(
+    text = element_text(size= 12),
+    axis.text = element_text(color = "black")
+  )
+
+```
+# Pathway heatmap 
+## Average up to treatment
+```{r}
+OE_data_average <- TAMU_data %>% 
+  mutate(sample_ID = str_sub(sample_name, end = 2)) %>% 
+  mutate(logTPM = log10(tpm+1)) %>% 
+  left_join(TAMU_metadata_nice, by = "sample_ID") %>% 
+  group_by(target_id, treatment) %>% 
+  summarise(
+    logTPM = mean(log10(tpm+1))
+  ) %>% 
+  ungroup() %>% 
+  group_by(target_id) %>% 
+  mutate(z.score = (logTPM - mean(logTPM))/sd(logTPM)) %>% 
+  ungroup()
+
+head(OE_data_average)
+```
+
+## Flav 
+```{r}
+flav_genes <- read_csv("../Data/cro_flav_antho_genes.csv")
+```
+
+```{r}
+OE_flav_heat_df <- OE_data_average %>% 
+  inner_join(flav_genes, by = c("target_id" = "gene_ID")) %>% 
+  arrange(order)
+
+OE_flav_heat_df
+```
+```{r}
+OE_flav_heat_df %>% 
+  mutate(tag = reorder(tag, -order)) %>% 
+  ggplot(aes(x = treatment, y = tag)) +
+  geom_tile(aes(fill = logTPM)) +
+  scale_fill_gradientn(colors = c("grey90", brewer.pal(9, "BuPu"))) +
+  labs(x = "Treatment",
+       y = NULL,
+       fill = "logTPM") +
+  theme_classic() +
+  theme(
+    legend.key.width = unit(0.8, "lines"),
+    axis.text.y.left = element_text(hjust = 0.5),
+    axis.text = element_text(color = "black"),
+    panel.spacing = unit(0.6, "lines"),
+    strip.background = element_rect(fill = NULL, color = NA)
+  )
+
+ggsave("../Results/R_output/OE_flav_antho_heatmap.svg", height = 5, width = 5)
+ggsave("../Results/R_output/OE_flav_antho_heatmap.png", height = 5, width = 5)
+```
+## MIA
+```{r}
+MIA_genes <- read_csv("../Data/leaf_MIA_genes.csv")
+MIA_genes <- MIA_genes %>% 
+  filter(is.na(tag) == F) %>% 
+  mutate(gene = str_replace_all(gene_ID, "-", "_")) %>% 
+  dplyr::select(gene, tag, `function`, order2, segment, gene_ID)
+
+head(MIA_genes)
+```
+
+```{r}
+OE_MIA_heat_df <- OE_data_average %>% 
+  inner_join(MIA_genes, by = c("target_id" = "gene")) %>% 
+  arrange(order2)
+
+OE_MIA_heat_df
+```
+```{r}
+summary(OE_MIA_heat_df$z.score)
+quantile(OE_MIA_heat_df$z.score, c(0.025, 0.05, 0.95, 0.975))
+```
+
+
+```{r}
+OE_MIA_heat_df %>% 
+  mutate(tag = reorder(tag, -order2)) %>% 
+  mutate(z.clipped = case_when(
+    z.score <= -1.5 ~ -1.5,
+    z.score >= 1.5 ~ 1.5,
+    T ~ z.score
+  )) %>% 
+  ggplot(aes(x = treatment, y = tag)) +
+  geom_tile(aes(fill = z.clipped)) +
+  scale_fill_gradientn(colors = rev(brewer.pal(11, "RdBu")),
+                       breaks = c(-1.4, 0, 1.4),
+                       labels = c("<-1.5", "0", ">1.5")) +
+  labs(x = "Treatment",
+       y = NULL,
+       fill = "z score") +
+  theme_classic() +
+  theme(
+    legend.key.width = unit(0.8, "lines"),
+    axis.text.y.left = element_text(hjust = 0.5, face = "italic"),
+    axis.text = element_text(color = "black"),
+    panel.spacing = unit(0.6, "lines"),
+    strip.background = element_rect(fill = NULL, color = NA)
+  )
+
+ggsave("../Results/R_output/OE_MIA_heatmap.svg", height = 6, width = 3.7)
+ggsave("../Results/R_output/OE_MIA_heatmap.png", height = 6, width = 3.7)
+```
+* Strong response of iridoid pathway in D (CrBIS1) but not in C (CaBIS).
+* Weak response for D4H & DAT in E (CrIDM1) but not in F (CaMYB123).
+* Moderate response for D4H & DAT in G (CrIDM4) and H (CaMYB5).
+* Interestingly, weak response from T16H2 & 16OMT & D4H & DAT 
+    for I (CrIDB1+CrIDM1) and K (CaTT8+CrIDM1).   
+    
+# DEseq
+```{r}
+count_table <- TAMU_data %>% 
+  mutate(sample_ID = str_sub(sample_name, end = 2)) %>% 
+  filter(str_detect(sample_ID, "E|G|H|I|K|M")) %>% 
+  mutate(count = as.integer(est_counts)) %>% 
+  dplyr::select(target_id, count, sample_ID) %>% 
+  pivot_wider(names_from = sample_ID, values_from = count) %>% 
+  as.data.frame()
+
+row.names(count_table) <- count_table$target_id
+head(count_table)
+```
+## Construct DESeqDataSet object
+```{r}
+head(TAMU_metadata_nice)
+
+dds_OE <- DESeqDataSetFromMatrix(
+  countData = count_table[,-1],
+  colData = TAMU_metadata_nice %>% 
+    filter(str_detect(sample_ID, "E|G|H|I|K|M")),
+  design = ~treatment, tidy = F
+)
+
+dds_OE
+```
+## Run DEseq
+```{r}
+dds_OE <- DESeq(dds_OE)
+```
+
+# DE for IDM1 
+```{r}
+IDM1_results <- results(dds_OE, contrast = c("treatment", "E", "M")) %>% 
+  as.data.frame() %>% 
+  filter(padj < 0.05) %>% 
+  filter(log2FoldChange >0) %>% 
+  mutate(gene_ID = row.names(.)) %>%
+  mutate(gene_ID2 = str_replace_all(gene_ID, "_", "-")) %>% 
+  arrange(-log2FoldChange) %>% 
+  left_join(func_anno, by = c("gene_ID" = "X1")) 
+
+IDM1_results
+```
+```{r}
+known_genes_results_E <- IDM1_results %>% 
+  left_join(MIA_genes, by = c("gene_ID" = "gene")) %>% 
+  filter(tag %in% c("DAT", "D4H", "THAS2", "16OMT", "T16H2") |
+           str_detect(gene_ID, "03G000120|05G006800|04G033370|07G002170|02G002580|04G007340") ) %>% 
+  mutate(FC = 2^log2FoldChange) %>% 
+  select(log2FoldChange, padj, gene_ID, gene_ID2, tag, order2, FC) %>% 
+  mutate(treatment = "E")
+
+known_genes_results_E
+```
+
+Nothing to note for IDM1 alone, as it's the same ones we noted before. 
+D4H 12.9-fold and D4T 5-fold.
+
+ 
+# DE for IDM4
+```{r}
+IDM4_results <- results(dds_OE, contrast = c("treatment", "G", "M")) %>% 
+  as.data.frame() %>% 
+  filter(padj < 0.05) %>% 
+  filter(log2FoldChange > 0) %>% 
+  mutate(gene_ID = row.names(.)) %>%
+  mutate(gene_ID2 = str_replace_all(gene_ID, "_", "-")) %>% 
+  arrange(-log2FoldChange) %>% 
+  left_join(func_anno, by = c("gene_ID" = "X1")) 
+
+IDM4_results
+```
+```{r}
+known_genes_results_G <- IDM4_results %>% 
+  left_join(MIA_genes, by = c("gene_ID" = "gene")) %>% 
+  filter(tag %in% c("DAT", "D4H", "THAS2", "16OMT", "T16H2") |
+           str_detect(gene_ID, "03G000120|05G006800|04G033370|07G002170|02G002580|04G007340")) %>% 
+  mutate(FC = 2^log2FoldChange) %>% 
+  select(log2FoldChange, padj, gene_ID, gene_ID2, tag, order2, FC) %>% 
+  mutate(treatment = "G")
+
+known_genes_results_G
+```
+
+ 
+## Where expressed in leaf single cell?
+```{r}
+G_dot <- DotPlot(CRO_RNA, features = IDM4_results$gene_ID2)$data 
+
+G_dot_peak_exp <- G_dot %>% 
+  group_by(features.plot) %>% 
+  slice_max(n = 1, order_by = avg.exp.scaled) %>% 
+  dplyr::select(features.plot, id)  %>% 
+  mutate(order_y = as.numeric(id)) %>% 
+  dplyr::rename(peak_cluster = id)  
+  
+
+G_dot_peak_exp
+```
+```{r}
+G_dot_peak_exp %>% 
+  filter(peak_cluster == 8) 
+```
+43/144 = 30%. 
+```{r}
+chisq.test(x = c(43, 144-43), p = c(0.04, 1-0.04))
+```
+
+
+```{r}
+G_dot_heat <- G_dot %>% 
+  left_join(G_dot_peak_exp, by = "features.plot") %>% 
+  mutate(features.plot = reorder(features.plot, -order_y)) %>% 
+  ggplot(aes(x = id, y = features.plot)) +
+  geom_tile(aes(fill = avg.exp.scaled)) +
+  scale_fill_gradientn(colors = brewer.pal(9, "YlGnBu")) +
+  labs(x = "Cluster",
+       y = "Genes",
+       fill = "Avg. Exp.") + 
+  theme_classic() +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text = element_text(color = "black"),
+        legend.key.height = unit(0.7, "lines"),
+        legend.key.width = unit(0.7, "lines"),
+        legend.position = "top",
+        plot.title = element_text(size = 10, hjust = 0.5))
+
+wrap_plots(G_dot_heat, Leaf_cell_type_strip +
+             guides(fill = guide_legend(nrow = 4)),
+           nrow = 2, heights = c(1, 0.03))
+
+ggsave("../Results/R_output/IDM4_DE_up.svg", height = 4, width = 3.8)
+ggsave("../Results/R_output/IDM4_DE_up.png", height = 4, width = 3.8)
+```
+
+## Candidate genes 
+```{r}
+IDM4_DE_up_candidates <- IDM4_results %>% 
+  inner_join(G_dot_peak_exp, by = c("gene_ID2" = "features.plot")) %>% 
+  filter(peak_cluster == 8) %>% 
+  left_join(MIA_genes %>% 
+              select(-`function`), by = c("gene_ID" = "gene"))
+
+IDM4_DE_up_candidates
+
+write_excel_csv(IDM4_DE_up_candidates, "../Results/R_output/IDM4_DE_up_candidates.csv")
+```
+
+# DE for CaMYB5
+```{r}
+MYB5_results <- results(dds_OE, contrast = c("treatment", "H", "M")) %>% 
+  as.data.frame() %>% 
+  filter(padj < 0.05) %>% 
+  filter(log2FoldChange > 0) %>% 
+  mutate(gene_ID = row.names(.)) %>%
+  mutate(gene_ID2 = str_replace_all(gene_ID, "_", "-")) %>% 
+  arrange(-log2FoldChange) %>% 
+  left_join(func_anno, by = c("gene_ID" = "X1")) 
+
+MYB5_results
+```
+```{r}
+known_genes_results_H<- MYB5_results %>% 
+  left_join(MIA_genes, by = c("gene_ID" = "gene")) %>% 
+  filter(tag %in% c("DAT", "D4H", "THAS2", "16OMT", "T16H2") |
+           str_detect(gene_ID, "03G000120|05G006800|04G033370|07G002170|02G002580|04G007340")) %>% 
+  mutate(FC = 2^log2FoldChange) %>% 
+  select(log2FoldChange, padj, gene_ID, gene_ID2, tag, order2, FC) %>% 
+  mutate(treatment = "H")
+
+known_genes_results_H
+```
+
+## Overlap with IDM4 up-regulated genes? 
+```{r}
+nrow(IDM4_results)
+nrow(MYB5_results)
+
+intersect(IDM4_results$gene_ID, MYB5_results$gene_ID) %>% length()
+```
+
+75% of IDM4 DE up genes can be found in CaMYB5 DE up genes 
+
+## Where expressed in leaf single cell?
+```{r}
+H_dot <- DotPlot(CRO_RNA, features = MYB5_results$gene_ID2)$data 
+
+H_dot_peak_exp <- H_dot %>% 
+  group_by(features.plot) %>% 
+  slice_max(n = 1, order_by = avg.exp.scaled) %>% 
+  dplyr::select(features.plot, id)  %>% 
+  mutate(order_y = as.numeric(id)) %>% 
+  dplyr::rename(peak_cluster = id)  
+  
+H_dot_peak_exp
+```
+```{r}
+H_dot_peak_exp %>% 
+  filter(peak_cluster == 8)
+```
+Only 51. 
+
+```{r}
+H_dot_peak_exp %>% 
+  filter(peak_cluster == 8) %>% 
+  inner_join(
+    G_dot_peak_exp %>% 
+  filter(peak_cluster == 8),
+    by = "features.plot"
+  )
+```
+
+36/44 = 81% overlap between IDM4 and CaMYB5 genes that are DE up by both 
+and normally most highly express in idioblast in leaf. 
+
+# DE for Treatment I 
+```{r}
+I_results <- results(dds_OE, contrast = c("treatment", "I", "M")) %>% 
+  as.data.frame() %>% 
+  filter(padj < 0.05) %>% 
+  filter(log2FoldChange > 0) %>% 
+  mutate(gene_ID = row.names(.)) %>%
+  mutate(gene_ID2 = str_replace_all(gene_ID, "_", "-")) %>% 
+  arrange(-log2FoldChange) %>% 
+  left_join(func_anno, by = c("gene_ID" = "X1")) 
+
+I_results
+```
+
+```{r}
+known_genes_results_I <- I_results %>% 
+  left_join(MIA_genes, by = c("gene_ID" = "gene")) %>% 
+  filter(tag %in% c("DAT", "D4H", "THAS2", "16OMT", "T16H2") |
+           str_detect(gene_ID, "03G000120|05G006800|04G033370|07G002170|02G002580|04G007340")) %>% 
+  mutate(FC = 2^log2FoldChange) %>% 
+  select(log2FoldChange, padj, gene_ID, gene_ID2, tag, order2, FC) %>% 
+  mutate(treatment = "I")
+
+known_genes_results_I
+```
+
+## Where expressed in leaf single cell?
+```{r}
+I_dot <- DotPlot(CRO_RNA, features = I_results$gene_ID2)$data 
+
+I_dot_peak_exp <- I_dot %>% 
+  group_by(features.plot) %>% 
+  slice_max(n = 1, order_by = avg.exp.scaled) %>% 
+  dplyr::select(features.plot, id)  %>% 
+  mutate(order_y = as.numeric(id)) %>% 
+  dplyr::rename(peak_cluster = id)  
+  
+
+I_dot_peak_exp
+```
+```{r}
+I_dot_peak_exp %>% 
+  filter(peak_cluster == 8)
+```
+
+147/796 = 18%. The response is not very specific to idioblast.  
+This is still higher than the background (4%). 
+```{r}
+chisq.test(x = c(147, 796-147), p = c(0.04, 1-0.04))
+```
+
+```{r}
+I_dot_heat <- I_dot %>% 
+  left_join(I_dot_peak_exp, by = "features.plot") %>% 
+  mutate(features.plot = reorder(features.plot, -order_y)) %>% 
+  ggplot(aes(x = id, y = features.plot)) +
+  geom_tile(aes(fill = avg.exp.scaled)) +
+  scale_fill_gradientn(colors = brewer.pal(9, "YlGnBu")) +
+  labs(x = "Cluster",
+       y = "Genes",
+       fill = "Avg. Exp.") + 
+  theme_classic() +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text = element_text(color = "black"),
+        legend.key.height = unit(0.7, "lines"),
+        legend.key.width = unit(0.7, "lines"),
+        legend.position = "top",
+        plot.title = element_text(size = 10, hjust = 0.5))
+
+wrap_plots(I_dot_heat, Leaf_cell_type_strip +
+             guides(fill = guide_legend(nrow = 4)),
+           nrow = 2, heights = c(1, 0.03))
+
+ggsave("../Results/R_output/I_DE_up.svg", height = 4, width = 3.8)
+ggsave("../Results/R_output/I_DE_up.png", height = 4, width = 3.8)
+```
+
+## Candidate genes?
+```{r}
+IDB1_IDM1_DE_up_candidates <- I_results %>% 
+  inner_join(I_dot_peak_exp, by = c("gene_ID2" = "features.plot")) %>% 
+  filter(peak_cluster == 8) %>% 
+  left_join(MIA_genes %>% 
+              select(-`function`), by = c("gene_ID" = "gene"))
+
+IDB1_IDM1_DE_up_candidates
+
+write_excel_csv(IDB1_IDM1_DE_up_candidates, "../Results/R_output/IDB1_IDM1_DE_up_candidates.csv")
+```
+
+# DE for Treatment K 
+```{r}
+K_results <- results(dds_OE, contrast = c("treatment", "K", "M")) %>% 
+  as.data.frame() %>% 
+  filter(padj < 0.05) %>% 
+  filter(log2FoldChange > 0) %>% 
+  mutate(gene_ID = row.names(.)) %>%
+  mutate(gene_ID2 = str_replace_all(gene_ID, "_", "-")) %>% 
+  arrange(-log2FoldChange) %>% 
+  left_join(func_anno, by = c("gene_ID" = "X1")) 
+
+K_results
+```
+```{r}
+known_genes_results_K <- K_results %>% 
+  left_join(MIA_genes, by = c("gene_ID" = "gene")) %>% 
+  filter(tag %in% c("DAT", "D4H", "THAS2", "16OMT", "T16H2") |
+           str_detect(gene_ID, "03G000120|05G006800|04G033370|07G002170|02G002580|04G007340")) %>% 
+  mutate(FC = 2^log2FoldChange) %>% 
+  select(log2FoldChange, padj, gene_ID, gene_ID2, tag, order2, FC) %>% 
+  mutate(treatment = "K")
+
+known_genes_results_K
+```
+
+## Overlap with treatment I? 
+```{r}
+nrow(I_results)
+nrow(K_results)
+
+intersect(I_results$gene_ID, K_results$gene_ID) %>% length()
+```
+638/915 = 70% in the overlap set 
+
+## Where expressed in leaf single cell?
+```{r}
+K_dot <- DotPlot(CRO_RNA, features = K_results$gene_ID2)$data 
+
+K_dot_peak_exp <- K_dot %>% 
+  group_by(features.plot) %>% 
+  slice_max(n = 1, order_by = avg.exp.scaled) %>% 
+  dplyr::select(features.plot, id)  %>% 
+  mutate(order_y = as.numeric(id)) %>% 
+  dplyr::rename(peak_cluster = id)  
+  
+
+K_dot_peak_exp
+```
+```{r}
+K_dot_peak_exp %>% 
+  filter(peak_cluster == 8)
+```
+192/1185 = 16.2%. The response is not very specific to idioblast.  
+This is still higher than the background (4%). 
+
+```{r}
+I_dot_peak_exp %>% 
+  filter(peak_cluster == 8) %>% 
+  inner_join(
+    K_dot_peak_exp %>% 
+  filter(peak_cluster == 8),
+    by = "features.plot"
+  )
+```
+130/147 = 88% overlap between I and K treamtent genes that are DE up by both 
+and normally most highly express in idioblast in leaf. 
+
+## Candidate genes 
+```{r}
+CaTT8_IDM1_DE_up_candidates <- K_results %>% 
+  inner_join(K_dot_peak_exp, by = c("gene_ID2" = "features.plot")) %>% 
+  filter(peak_cluster == 8) %>% 
+  left_join(MIA_genes %>% 
+              select(-`function`), by = c("gene_ID" = "gene"))
+
+CaTT8_IDM1_DE_up_candidates
+
+write_excel_csv(CaTT8_IDM1_DE_up_candidates, "../Results/R_output/CaTT8_IDM1_DE_up_candidates.csv")
+```
+
+
+# Mean separation plots
+## Wrangle effect sizes together 
+```{r}
+known_gene_effects <- rbind(
+  known_genes_results_E,
+  known_genes_results_G,
+  known_genes_results_H,
+  known_genes_results_I,
+  known_genes_results_K
+) %>%
+  mutate(tag = reorder(tag, order2)) %>%
+  mutate(FC_text = signif(FC, digits = 2)) %>% 
+  select(gene_ID, tag, order2, FC_text, treatment) %>% 
+  mutate(tag2 = case_when(
+    str_detect(gene_ID, "CRO_05G006800.1") ~ "IDM1",
+    str_detect(gene_ID, "CRO_04G033370.1") ~ "IDM2",
+    str_detect(gene_ID, "CRO_07G002170.1") ~ "IDM3",
+    str_detect(gene_ID, "CRO_02G002580.1") ~ "IDM4",
+    str_detect(gene_ID, "CRO_03G000120.5") ~ "IDW1",
+    str_detect(gene_ID, "CRO_04G007340.2") ~ "IDB1"
+  ))
+
+head(known_gene_effects)
+```
+
+## T16H2, 16OMT, D4H, DAT, THAS2 
+```{r}
+MIA_genes %>% 
+  filter(tag %in% c("T16H2", "16OMT", 
+                    "D4H", "DAT", "THAS2")) %>% 
+  left_join(TAMU_data, by = c("gene"="target_id")) %>%
+  mutate(treatment = str_sub(sample_name, end = 1)) %>%
+  filter(str_detect(treatment, "E|G|H|I|K|M")) %>% 
+  mutate(tag = reorder(tag, order2)) %>% 
+  ggplot(aes(x = treatment, y = tpm)) +
+  facet_wrap(~tag, scales = "free", ncol = 2) +
+  ggbeeswarm::geom_quasirandom(aes(), alpha = 0.5, color = "grey70") +
+  stat_summary(geom = "pointrange", fun.data = "mean_se", shape = 4, size = 0.5) +
+  geom_hline(data = . %>% 
+               filter(treatment == "M") %>% 
+                 group_by(treatment, tag) %>% 
+                 summarise(mean = mean(tpm)), 
+               aes(yintercept = mean)) +
+  geom_text(data = known_gene_effects %>% 
+              filter(is.na(tag) == F), 
+            aes(label = FC_text, y = Inf), vjust = 1.5) +
+  labs(x = "Treatment",
+       y = "tpm") +
+  theme_classic()  +
+  theme(panel.spacing = unit(0.7, "lines"))
+
+ggsave("../Results/R_output/OE_mean_sep.svg", height = 5, width = 4.2)
+ggsave("../Results/R_output/OE_mean_sep.png", height = 5, width = 4.2)
+```
+```{r}
+T16H2_16OMT_mean_sep <- MIA_genes %>% 
+  filter(tag %in% c("T16H2", "16OMT")) %>% 
+  left_join(TAMU_data, by = c("gene"="target_id")) %>%
+  mutate(treatment = str_sub(sample_name, end = 1)) %>%
+  filter(str_detect(treatment, "E|G|H|I|K|M")) %>% 
+  mutate(tag = reorder(tag, order2)) %>% 
+  ggplot(aes(x = treatment, y = tpm)) +
+  facet_wrap(~tag, scales = "free", ncol = 1) +
+  ggbeeswarm::geom_quasirandom(aes(), alpha = 0.5, color = "grey70") +
+  stat_summary(geom = "pointrange", fun.data = "mean_se", shape = 4, size = 0.5) +
+  geom_hline(data = . %>% 
+               filter(treatment == "M") %>% 
+                 group_by(treatment, tag) %>% 
+                 summarise(mean = mean(tpm)), 
+               aes(yintercept = mean)) +
+  geom_text(data = known_gene_effects %>% 
+              filter(is.na(tag) == F) %>% 
+              filter(tag %in% c("T16H2", "16OMT")) , 
+            aes(label = FC_text, y = Inf), vjust = 1.5) +
+  labs(x = "Treatment",
+       y = "tpm") +
+  theme_classic()  +
+  theme(panel.spacing = unit(0.7, "lines"),
+        strip.text = element_text(face = "italic"))
+```
+
+```{r}
+D4H_DAT_THAS2_mean_sep <- MIA_genes %>% 
+  filter(tag %in% c("D4H", "DAT", "THAS2")) %>% 
+  left_join(TAMU_data, by = c("gene"="target_id")) %>%
+  mutate(treatment = str_sub(sample_name, end = 1)) %>%
+  filter(str_detect(treatment, "E|G|H|I|K|M")) %>% 
+  mutate(tag = reorder(tag, order2)) %>% 
+  ggplot(aes(x = treatment, y = tpm)) +
+  facet_wrap(~tag, scales = "free", ncol = 1) +
+  ggbeeswarm::geom_quasirandom(aes(), alpha = 0.5, color = "grey70") +
+  stat_summary(geom = "pointrange", fun.data = "mean_se", shape = 4, size = 0.5) +
+  geom_hline(data = . %>% 
+               filter(treatment == "M") %>% 
+                 group_by(treatment, tag) %>% 
+                 summarise(mean = mean(tpm)), 
+               aes(yintercept = mean)) +
+  geom_text(data = known_gene_effects %>% 
+              filter(is.na(tag) == F) %>% 
+              filter(tag %in% c("D4H", "DAT", "THAS2")) , 
+            aes(label = FC_text, y = Inf), vjust = 1.5) +
+  labs(x = "Treatment",
+       y = "tpm") +
+  theme_classic()  +
+  theme(panel.spacing = unit(0.7, "lines"),
+        strip.text = element_text(face = "italic"))
+
+wrap_plots(D4H_DAT_THAS2_mean_sep, T16H2_16OMT_mean_sep,
+           design = c("A#
+                       AB"),
+           heights = c(0.5, 1))
+
+ggsave("../Results/R_output/OE_mean_sep_2.svg", height = 5, width = 4.2)
+ggsave("../Results/R_output/OE_mean_sep_2.png", height = 5, width = 4.2)
+```
+
+* E = IDM1
+* G = IDM4
+* H = CaMYB5
+* I = IDB1 + IDM1
+* K = TT8 + IDM1 
+
+## TFs
+### IDM2/3 and IDW1
+```{r}
+IDM2_3_IDW1_mean_sep <- data.frame(
+  gene_ID = c("CRO_05G006800.1",
+              "CRO_04G033370.1",
+              "CRO_07G002170.1",
+              "CRO_02G002580.1",
+              "CRO_03G000120.5",
+              "CRO_04G007340.2")
+) %>% 
+  mutate(tag2 = case_when(
+    str_detect(gene_ID, "CRO_05G006800.1") ~ "IDM1",
+    str_detect(gene_ID, "CRO_04G033370.1") ~ "IDM2",
+    str_detect(gene_ID, "CRO_07G002170.1") ~ "IDM3",
+    str_detect(gene_ID, "CRO_02G002580.1") ~ "IDM4",
+    str_detect(gene_ID, "CRO_03G000120.5") ~ "IDW1",
+    str_detect(gene_ID, "CRO_04G007340.2") ~ "IDB1"
+  )) %>% 
+  filter(tag2 %in% c("IDM1", "IDB1", "IDM4") == F) %>% 
+  left_join(TAMU_data, by = c("gene_ID"="target_id")) %>% 
+  mutate(treatment = str_sub(sample_name, end = 1)) %>%
+  filter(str_detect(treatment, "E|G|H|I|K|M")) %>% 
+  ggplot(aes(x = treatment, y = tpm)) +
+  facet_wrap(~tag2, scales = "free") +
+  ggbeeswarm::geom_quasirandom(aes(), alpha = 0.5, color = "grey70") +
+  stat_summary(geom = "pointrange", fun.data = "mean_se", shape = 4, size = 0.5) +
+  geom_hline(data = . %>% 
+               filter(treatment == "M") %>% 
+                 group_by(treatment, tag2) %>% 
+                 summarise(mean = mean(tpm)), 
+               aes(yintercept = mean)) +
+  geom_text(data = known_gene_effects %>% 
+              filter(is.na(tag2) == F) %>% 
+              filter(tag2 %in% c("IDM1", "IDB1", "IDM4") == F) %>% 
+              filter(str_detect(treatment, "E|G|H|I|K|M")), 
+            aes(label = FC_text, y = Inf), vjust = 1.2) +
+  labs(x = "Treatment",
+       y = "tpm") +
+  theme_classic()  +
+  theme(panel.spacing = unit(0.7, "lines"),
+        strip.text = element_text(face = "italic"))
+
+IDM2_3_IDW1_mean_sep
+
+ggsave("../Results/R_output/OE_mean_sep_TF1.svg", height = 1.8, width = 6.5)
+ggsave("../Results/R_output/OE_mean_sep_TF1.png", height = 1.8, width = 6.5)
+```
+
+### IDM4 & IDB1
+```{r}
+IDB1_mean_sep <- data.frame(
+  gene_ID = c("CRO_05G006800.1",
+              "CRO_04G033370.1",
+              "CRO_07G002170.1",
+              "CRO_02G002580.1",
+              "CRO_03G000120.5",
+              "CRO_04G007340.2")
+) %>% 
+  mutate(tag2 = case_when(
+    str_detect(gene_ID, "CRO_05G006800.1") ~ "IDM1",
+    str_detect(gene_ID, "CRO_04G033370.1") ~ "IDM2",
+    str_detect(gene_ID, "CRO_07G002170.1") ~ "IDM3",
+    str_detect(gene_ID, "CRO_02G002580.1") ~ "IDM4",
+    str_detect(gene_ID, "CRO_03G000120.5") ~ "IDW1",
+    str_detect(gene_ID, "CRO_04G007340.2") ~ "IDB1"
+  )) %>% 
+  filter(tag2 %in% c("IDB1")) %>% 
+  left_join(TAMU_data, by = c("gene_ID"="target_id")) %>% 
+  mutate(treatment = str_sub(sample_name, end = 1)) %>%
+  filter(str_detect(treatment, "E|G|H|K|M")) %>% 
+  ggplot(aes(x = treatment, y = tpm)) +
+  facet_wrap(~tag2, scales = "free") +
+  ggbeeswarm::geom_quasirandom(aes(), alpha = 0.5, color = "grey70") +
+  stat_summary(geom = "pointrange", fun.data = "mean_se", shape = 4, size = 0.5) +
+  geom_hline(data = . %>% 
+               filter(treatment == "M") %>% 
+                 group_by(treatment, tag2) %>% 
+                 summarise(mean = mean(tpm)), 
+               aes(yintercept = mean)) +
+  geom_text(data = known_gene_effects %>% 
+              filter(is.na(tag2) == F) %>% 
+              filter(tag2 %in% c( "IDB1")) %>% 
+              filter(str_detect(treatment, "E|G|H|K|M")),
+            aes(label = FC_text, y = Inf), vjust = 1.2) +
+  labs(x = "Treatment",
+       y = "tpm") +
+  theme_classic()  +
+  theme(panel.spacing = unit(0.7, "lines"),
+        strip.text = element_text(face = "italic"))
+
+# IDB1_mean_sep
+```
+
+```{r}
+IDM4_mean_sep <- data.frame(
+  gene_ID = c("CRO_05G006800.1",
+              "CRO_04G033370.1",
+              "CRO_07G002170.1",
+              "CRO_02G002580.1",
+              "CRO_03G000120.5",
+              "CRO_04G007340.2")
+) %>% 
+  mutate(tag2 = case_when(
+    str_detect(gene_ID, "CRO_05G006800.1") ~ "IDM1",
+    str_detect(gene_ID, "CRO_04G033370.1") ~ "IDM2",
+    str_detect(gene_ID, "CRO_07G002170.1") ~ "IDM3",
+    str_detect(gene_ID, "CRO_02G002580.1") ~ "IDM4",
+    str_detect(gene_ID, "CRO_03G000120.5") ~ "IDW1",
+    str_detect(gene_ID, "CRO_04G007340.2") ~ "IDB1"
+  )) %>% 
+  filter(tag2 %in% c("IDM4")) %>% 
+  left_join(TAMU_data, by = c("gene_ID"="target_id")) %>% 
+  mutate(treatment = str_sub(sample_name, end = 1)) %>%
+  filter(str_detect(treatment, "E|H|I|K|M")) %>% 
+  ggplot(aes(x = treatment, y = tpm)) +
+  facet_wrap(~tag2, scales = "free") +
+  ggbeeswarm::geom_quasirandom(aes(), alpha = 0.5, color = "grey70") +
+  stat_summary(geom = "pointrange", fun.data = "mean_se", shape = 4, size = 0.5) +
+  geom_hline(data = . %>% 
+               filter(treatment == "M") %>% 
+                 group_by(treatment, tag2) %>% 
+                 summarise(mean = mean(tpm)), 
+               aes(yintercept = mean)) +
+  geom_text(data = known_gene_effects %>% 
+              filter(is.na(tag2) == F) %>% 
+              filter(tag2 %in% c( "IDM4")) %>% 
+              filter(str_detect(treatment, "E|H|I|K|M")),
+            aes(label = FC_text, y = Inf), vjust = 1.2) +
+  labs(x = "Treatment",
+       y = "tpm") +
+  theme_classic()  +
+  theme(panel.spacing = unit(0.7, "lines"),
+        strip.text = element_text(face = "italic"))
+
+#IDM4_mean_sep
+
+wrap_plots(IDB1_mean_sep, IDM4_mean_sep, nrow = 2)
+
+ggsave("../Results/R_output/OE_mean_sep_TF2.svg", height = 3.7, width = 2.25)
+ggsave("../Results/R_output/OE_mean_sep_TF2.png", height = 3.7, width = 2.25)
+```
+
+# Network diagrams? 
+```{r}
+library(ggraph)
+library(igraph)
+```
+
+## Edge table 
+```{r}
+GRN_edge_table <- read_excel("../Results/edge_table_TFs.xlsx")
+head(GRN_edge_table)
+```
+## Node table 
+```{r}
+node_table <- data.frame(
+  tag = unique(c(GRN_edge_table$From, GRN_edge_table$To))
+) %>% 
+  mutate(species = case_when(
+    str_detect(tag, "^Cr") ~ "Cath. roseus",
+    str_detect(tag, "^Ca") ~ "Camp. acuminata"
+  )) %>% 
+  mutate(class = case_when(
+    str_detect(tag, "16") ~ "Epidermis Alkaloid",
+    str_detect(tag ,"DAT|D4H|THAS") ~ "Idioblast Alkaloid",
+    T ~ "TF"
+  )) %>% 
+  mutate(y = case_when(
+      str_detect(tag, "IDB1") ~ 2.25,
+      str_detect(tag, "CaTT8") ~ 2.25, 
+      str_detect(tag, "IDM1|IDM4|CaMYB") ~ 2,
+      str_detect(tag, "IDM2|IDM3|IDW1") ~ 2.5,
+      T ~ 1.5)) %>% 
+  mutate(x = case_when(
+    str_detect(tag, "T16H2") ~ 1,
+    str_detect(tag, "16OMT") ~ 2, 
+    str_detect(tag, "IDM1") ~ 3,
+    str_detect(tag, "CaTT8") ~ 2.25,
+    str_detect(tag, "IDB1") ~ 3,
+    str_detect(tag, "IDM4") ~ 4,
+    str_detect(tag, "MYB5") ~ 5,
+    str_detect(tag, "IDM2") ~ 5,
+    str_detect(tag, "IDM3") ~ 4.5,
+    str_detect(tag, "IDW1") ~ 4,
+    str_detect(tag, "D4H") ~ 4,
+    str_detect(tag, "DAT") ~ 5,
+    str_detect(tag, "THAS2") ~ 6
+  ))
+
+node_table
+```
+```{r}
+TF_GRN <- graph_from_data_frame(GRN_edge_table,
+                                        vertices = node_table,
+                                        directed = T)
+```
+
+```{r}
+ggraph(TF_GRN, x = x, y = y) +
+  geom_edge_link(aes(color = Relationship), 
+                     arrow = arrow(length = unit(0.3, "lines")),
+                     end_cap = circle(0.4, "lines"),
+                     start_cap = circle(0.1, "lines"), width = 1) +
+  geom_node_point(aes(fill = class), 
+                  color = "grey90", size = 3, shape = 21, alpha = 0.8) +
+  geom_node_text(aes(label = name), repel = T, size = 3) +
+  scale_fill_manual(values = c(viridis(5)[c(1, 4, 5)]),
+                   limits = c( "TF", 
+                             "Epidermis Alkaloid", "Idioblast Alkaloid")) +
+  scale_edge_color_manual(values = c(brewer.pal(9, "PuRd")[c(3, 5)],
+                                     carto_pal(12, "Prism")[c(3, 2, 1)],
+                                     carto_pal(7, "Teal")[7]
+                                   ),
+                          limits = c(
+                             "O", "O + Sc", "Sy", "Sy + Sc", "Sy + Sc + O", "Or" 
+                          )) +
+  labs(fill = "Stage") +
+  guides(
+     fill = guide_legend(ncol = 1),
+     edge_color = guide_legend(ncol = 1, order = 1)
+   ) + 
+  theme_void()  +
+  theme(
+    #legend.position = "bottom",
+    #legend.box = "vertical"
+  )
+
+ggsave("../Results/R_output/IDM_network.svg", height = 3.5, width = 5, bg = "white")
+ggsave("../Results/R_output/IDM_network.png", height = 3.5, width = 5, bg = "white")
+```
+
+# Mean separation plots for notable enzyme candidates 
+```{r}
+curated_enzyme_candidates <- read_excel("../Results/candidate_enzymes.csv.xlsx")
+curated_enzyme_candidates <- curated_enzyme_candidates %>% 
+  mutate(tag = str_remove_all(gene_ID, "CRO_|\\.\\d+")) %>% 
+  mutate(family = case_when(
+    str_detect(X2, "P450") ~ "P450",
+    str_detect(X2, "elicit|alcohol dehydrogenase") ~ "ADH",
+    str_detect(X2, "FAD") ~ "FAD"
+  )) %>% 
+  mutate(FC_text = 2^log2FoldChange %>% signif(2))
+
+curated_enzyme_candidates
+```
+
+```{r}
+curated_enzyme_candidates %>% 
+  left_join(TAMU_data, by = c("gene_ID"="target_id")) %>%
+  mutate(treatment = str_sub(sample_name, end = 1)) %>%
+  filter(str_detect(treatment, "E|G|H|I|K|M")) %>% 
+  ggplot(aes(x = treatment, y = tpm)) +
+  facet_wrap(~tag, scales = "free") +
+  ggbeeswarm::geom_quasirandom(aes(), alpha = 0.5, color = "grey70") +
+  stat_summary(geom = "pointrange", fun.data = "mean_se", shape = 4, size = 0.5) +
+  geom_hline(data = . %>% 
+               filter(treatment == "M") %>% 
+                 group_by(treatment, tag) %>% 
+                 summarise(mean = mean(tpm)), 
+               aes(yintercept = mean)) +
+  labs(x = "Treatment",
+       y = "tpm") +
+  theme_classic()  +
+  theme(panel.spacing = unit(0.7, "lines"))
+
+ggsave("../Results/R_output/OE_mean_sep_candidate.svg", height = 4, width = 6.5)
+ggsave("../Results/R_output/OE_mean_sep_candidate.png", height = 4, width = 6.5)
+```
+Serpentine synthase 03G003540 is activated by treatment K. 
+THAS1 01G033230 is activated by EGIK. 
+ADH32 (06G024590, described in Li et al., 2023) activated by HIK. 
+
+## Expression at single cell ? 
+```{r}
+candidate_dot <- DotPlot(CRO_RNA, features = curated_enzyme_candidates$gene_ID2)$data 
+```
+
+```{r}
+candidate_dot_heat <- candidate_dot %>% 
+  left_join(curated_enzyme_candidates, by = c("features.plot" = "gene_ID2")) %>% 
+  ggplot(aes(x = id, y = features.plot)) +
+  facet_grid(family ~., scales = "free", space = "free") +
+  geom_point(aes(size = pct.exp, fill = avg.exp.scaled), shape = 21, color = "white") +
+  scale_fill_gradientn(colors = brewer.pal(9, "YlGnBu")) +
+  guides(size = guide_legend(override.aes = list(fill = "grey40"))) +
+  labs(x = "Cluster",
+       y = NULL, 
+       fill = "Avg. Exp.",
+       size = "% Exp.") +
+  theme_classic() +
+  theme(axis.text = element_text(color = "black"),
+        title = element_text(size = 10),
+        axis.text.y = element_text(hjust = 0.5),
+        legend.key.height = unit(0.7, "lines"),
+        legend.key.width = unit(0.7, "lines")
+        ) 
+
+wrap_plots(candidate_dot_heat, Leaf_cell_type_strip +
+             guides(fill = guide_legend(nrow = 4)),
+           nrow = 2, heights = c(1, 0.03))
+
+ggsave("../Results/R_output/candidate_enzymes_dot.svg", height = 5, width = 5)
+ggsave("../Results/R_output/candidate_enzymes_dot.png", height = 5, width = 5)
+```
+
+# Export DE up genes that are not normally expressed in the leaf 
+rbind results and filter for not detected in leaf single cell  
+```{r}
+DE_up_not_leaf <- rbind(
+  IDM1_results %>% 
+    mutate(treatment = "IDM1"),
+  IDM4_results %>% 
+    mutate(treatment = "IDM4"),
+  MYB5_results %>% 
+    mutate(treatment = "CaMYB5"),
+  I_results %>% 
+    mutate(treatment = "I"),
+  K_results %>% 
+    mutate(treatment = "K")
+) %>% 
+  filter(gene_ID2 %in% row.names(CRO_RNA) == F) %>% 
+  group_by(gene_ID) %>% 
+  slice_max(order_by = log2FoldChange, n = 1, with_ties = F) %>% 
+  filter(str_detect(gene_ID, "CRO"))
+
+head(DE_up_not_leaf)
+```
+```{r}
+write_excel_csv(DE_up_not_leaf, "../Results/R_output/DE_up_not_leaf.csv")
+```
+ 
+ 
+# Check TF expression in JA
+```{r}
+bulk_RNAseq_data <- read_csv("../Data/bulk_exp_table_long.csv")
+head(bulk_RNAseq_data)
+```
+
+```{r}
+JA_libraries <- bulk_RNAseq_data %>% 
+  filter(`Sample ID` %in% c("Shoot Ctrl", "Shoot MeJA 6h", 
+                            "Suspension Ctrl", "Sus. MeJA 24hr"))
+
+head(JA_libraries)
+```
+
+
+```{r}
+JA_libraries_wide <- JA_libraries %>% 
+  mutate(tag = str_remove(target_id, "CRO_")) %>% 
+  mutate(tag = str_remove(tag, "\\.\\d+")) %>%
+  mutate(gene_ID = str_replace(target_id, "_", "-")) %>% 
+  select(gene_ID, tag, tpm, `Sample ID`) %>% 
+  #filter(label_3 %in% Tip_table$label_3) %>% 
+  pivot_wider(names_from = `Sample ID`, values_from = tpm) %>% 
+  mutate(shoot_Log2FC = log2((`Shoot MeJA 6h` + 1) / (`Shoot Ctrl` + 1))) %>% 
+  mutate(sus_Log2FC = log2((`Sus. MeJA 24hr` + 1) / (`Suspension Ctrl` + 1))) 
+
+head(JA_libraries_wide)
+```
+
+
+```{r}
+TF_candidate_wide <- JA_libraries_wide %>% 
+  filter(tag %in% c("08G020500", 
+                    "04G007340", 
+                    "05G006800",
+                    "02G002580")) %>%
+   mutate(tag2 = case_when(
+    tag == "08G020500" ~ "CrBIS1",
+    tag == "04G007340" ~ "CrIDB1",
+    tag == "05G006800" ~ "CrIDM1",
+    tag == "02G002580" ~ "CrIDM4"
+  )) %>% 
+  mutate(tag2 = factor(tag2, levels = c(
+     "CrBIS1", "CrIDB1", "CrIDM1", "CrIDM4"
+  ))) 
+
+TF_candidate_wide
+```
+
+```{r}
+TF_JA_lfc_plot <- TF_candidate_wide %>% 
+  mutate(txt.col = case_when(
+    sus_Log2FC > 3 ~ "white",
+    T ~ "black"
+  )) %>% 
+  ggplot(aes(x = tag2, y = "24 hr MeJA / ctrl")) +
+  geom_tile(aes(fill = sus_Log2FC)) +
+  geom_text(aes(label = signif(sus_Log2FC, 2), color = txt.col)) +
+  scale_fill_gradientn(colors = rev(brewer.pal(11, "RdBu")),
+                       limits = c(-5.5, 5.5),
+                       breaks = c(-5, 0, 5)) +
+  scale_color_identity() +
+  labs(x = "TFs",
+       y = "",
+       fill = "log2FC") + 
+  theme_classic() +
+  theme(axis.text = element_text(color = "black"),
+        axis.text.x = element_text(face = "italic")) 
+ 
+
+TF_JA_tpm_plot <- TF_candidate_wide %>% 
+  dplyr::select(tag2, `Suspension Ctrl`, `Sus. MeJA 24hr`) %>% 
+  pivot_longer(cols = !tag2, names_to = "treatment", values_to = "tpm") %>% 
+  mutate(log2TPM = log2(tpm + 1)) %>% 
+  ggplot(aes(x = tag2, y = treatment)) +
+  geom_tile(aes(fill = log2TPM)) +
+  scale_fill_gradientn(colors = brewer.pal(9, "YlGnBu"),
+                       breaks = c(1, 3, 5)
+                       ) +
+  labs(x = "TFs",
+       y = "treatment",
+       fill = "log2(TPM + 1)") + 
+  theme_classic() +
+  theme(axis.text = element_text(color = "black"),
+        axis.text.x = element_text(face = "italic")) 
+
+wrap_plots(TF_JA_tpm_plot, TF_JA_lfc_plot,
+           nrow = 2, heights = c(1, 0.6),
+           guides = "collect") &
+  theme(legend.key.height = unit(0.8, "lines"),
+        legend.key.width = unit(0.7, "lines"))
+
+ggsave("../Results/R_output/IDB_IDM_JA.svg", height = 3, width = 6)
+ggsave("../Results/R_output/IDB_IDM_JA.png", height = 3, width = 6)
+```
+
