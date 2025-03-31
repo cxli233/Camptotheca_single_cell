@@ -1,0 +1,415 @@
+---
+title: "MYB_bHLH_trees"
+author: "Chenxin Li"
+date: "2024-10-31"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Packages
+```{r}
+library(tidyverse)
+library(readxl)
+
+library(RColorBrewer)
+library(viridis)
+library(rcartocolor)
+library(svglite)
+
+library(patchwork)
+
+library(ggtree)
+library(ggtreeExtra)
+library(treeio)
+library(ape)
+
+library(Seurat)
+```
+
+# # MYBs
+## Tree data 
+```{r}
+CAA_CRO_MYB_tree <- read.tree("../Results/Phylogeny/RAxML_bipartitions.myb_out")
+
+CAA_CRO_MYB_tree
+```
+CrIDM1: CRO_05G006800
+CaMYB123: Caacu.v4.13G012370
+MYB123
+
+CrIDM4: CRO_02G002580 
+CaMYB5: Caacu.v4.17G000670
+MYB005
+
+```{r}
+Tip_table <- data.frame(
+  label = CAA_CRO_MYB_tree$tip.label
+) %>% 
+  mutate(label_2 = case_when(
+    str_detect(label, "Arabidopsis") ~ str_extract(label, "MYB\\d+"),
+    str_detect(label, "CRO") ~ str_remove_all(label, "\\.\\d+$"),
+    str_detect(label, "Caacu.v4.") ~ str_remove_all(label, "\\.\\d+$"),
+    T ~ ""
+  )) %>% 
+  mutate(label_3 = case_when(
+   # str_detect(label, "05G006800") ~ "CrIDM1",
+  #   str_detect(label, "MYB123") ~ "AtTT2",
+   #  str_detect(label, "Caacu.v4.13G012370") ~ "CaMYB123",
+    str_detect(label, "MYB005") ~ "AtMYB5",
+    str_detect(label, "02G002580") ~ "CrIDM4",
+    str_detect(label, "Caacu.v4.17G000670") ~ "CaMYB5 (17G000670) ",
+    T ~ str_remove_all(label_2, "Caacu.v4.") 
+  )) %>% 
+  mutate(species = case_when(
+    str_detect(label, "Arabidopsis") ~ "A. thaliana",
+    str_detect(label, "^CRO") ~ "C. roseus",
+    str_detect(label, "^Caac") ~ "C. acuminata", 
+    T ~ "other"
+  )) %>% 
+  mutate(index = 1:n()) 
+
+head(Tip_table)
+```
+```{r}
+CAA_CRO_MYB_tree_nice <- full_join(
+  CAA_CRO_MYB_tree, Tip_table, by = "label"
+)
+```
+
+# Make tree 
+## All MYBs 
+```{r}
+CAA_CRO_MYB_tree_nice %>% 
+  ggtree(
+    layout = "circular",
+    branch.length = "none"
+  ) +
+  geom_tippoint(aes(color = species)) +
+  geom_tiplab(aes(label = label_2), size = 2.25) +
+  geom_nodelab(aes(subset = as.numeric(label) >= 70, label = label),
+               size = 1.8, geom = "text", hjust = 2.2, vjust = -0.75) + 
+  scale_color_manual(values = brewer.pal(8, "Set2")[c(1, 2, 4)]) +
+  theme(
+    legend.position = c(0.1, 0.1),
+    legend.text = element_text(face = "italic")
+  )
+
+ggsave("../Results/R_output/AT_CRO_CAA_MYB_tree.svg", height = 16, width = 16)
+ggsave("../Results/R_output/AT_CRO_CAA_MYB_tree.pdf", height = 16, width = 16)
+ggsave("../Results/R_output/AT_CRO_CAA_MYB_tree.png", height = 16, width = 16)
+```
+```{r}
+CAA_CRO_MYB_tree_nice %>% 
+  ggtree(
+    layout = "circular",
+    branch.length = "none"
+  ) +
+  geom_tippoint(aes(color = species)) +
+  geom_tiplab(aes(label = label_3), size = 4) +
+  geom_nodelab(aes(subset = as.numeric(label) >= 70, label = label),
+               size = 1.8, geom = "text", hjust = 2.2, vjust = -0.75) + 
+  scale_color_manual(values = brewer.pal(8, "Set2")[c(1, 2, 4)]) +
+  theme(
+    legend.position = c(0.1, 0.1),
+    legend.text = element_text(face = "italic")
+  )
+
+ggsave("../Results/R_output/AT_CRO_CAA_MYB_tree_small.svg", height = 12, width = 12)
+ggsave("../Results/R_output/AT_CRO_CAA_MYB_tree_small.pdf", height = 12, width = 12)
+ggsave("../Results/R_output/AT_CRO_CAA_MYB_tree_small.png", height = 12, width = 12)
+```
+
+
+## AtTT2/CrIDM1 clade
+CrIDM1: CRO_05G006800
+CaMYB123: Caacu.v4.13G012370
+```{r}
+Tip_table %>% 
+  filter(str_detect(label, "MYB123|CRO_05G006800|Caacu.v4.13G012370"))
+```
+```{r}
+IDM1_mrca_node <- getMRCA(CAA_CRO_MYB_tree, tip = c("Caacu.v4.13G012370.2", 
+                                                    "CRO_05G006800.1",
+                                                    "Arabidopsis-thaliana-At5g35550-At2R-MYB123"
+                                                    )) 
+
+descendant_tips <- CAA_CRO_MYB_tree$tip.label[offspring(CAA_CRO_MYB_tree, IDM1_mrca_node)]
+
+subset_tree_IDM1 <- treeio::drop.tip(
+  CAA_CRO_MYB_tree_nice, 
+  CAA_CRO_MYB_tree$tip.label[!(CAA_CRO_MYB_tree$tip.label %in% descendant_tips)]
+                        )
+```
+
+```{r}
+subset_tree_IDM1 %>% 
+  ggtree(
+    #layout = "circular",
+    #branch.length = "none"
+  ) +
+  geom_tippoint(aes(color = species)) +
+  geom_tiplab(aes(label = label_3), size = 3, fontface = "italic") +
+  geom_nodelab(aes(
+    subset = label >= 70, 
+                   label = label),
+               size = 3, geom = "text", hjust = 1.2, vjust = -0.75) +
+  scale_color_manual(values = c(brewer.pal(8, "Set2")[c(1, 2, 4)])) +
+  labs(color = "species") +
+  #scale_x_continuous(limits = c(0, 0.4)) +
+  theme(
+   legend.position = c(0.83, 0.8),
+   legend.text = element_text(face = "italic", size = 10),
+   title = element_text(size = 10)
+  ) 
+```
+Placed at the base of the tree. 
+
+## AtMYB5/CrIDM4 clade 
+CrIDM4: CRO_02G002580 
+CaMYB5: Caacu.v4.17G000670
+```{r}
+Tip_table %>% 
+  filter(str_detect(label, "MYB005|CRO_02G002580|Caacu.v4.17G000670|Caacu.v4.2G016000"))
+```
+
+```{r}
+IDM4_mrca_node <- getMRCA(CAA_CRO_MYB_tree, tip = c("Caacu.v4.17G000670.1", 
+                                                    "Caacu.v4.2G016000.1", "CRO_02G002580.1",
+                                                    "Arabidopsis-thaliana-At3g13540-At2R-MYB005"
+                                                    )) 
+
+descendant_tips <- CAA_CRO_MYB_tree$tip.label[offspring(CAA_CRO_MYB_tree, IDM4_mrca_node)]
+
+subset_tree_IDM4 <- treeio::drop.tip(
+  CAA_CRO_MYB_tree_nice, 
+  CAA_CRO_MYB_tree$tip.label[!(CAA_CRO_MYB_tree$tip.label %in% descendant_tips)]
+                        )
+```
+
+```{r}
+IDM4_tree <- subset_tree_IDM4 %>% 
+  ggtree(
+    #layout = "circular",
+    #branch.length = "none"
+  ) +
+  geom_tippoint(aes(color = species), size = 3) +
+  geom_tiplab(aes(label = label_3), size = 3, fontface = "italic") +
+  geom_nodelab(aes(
+    subset = label >= 70, 
+                   label = label),
+               size = 3, geom = "text", hjust = 1.2, vjust = -0.75) +
+  scale_color_manual(values = c(brewer.pal(8, "Set2")[c(1, 2, 4)])) +
+  labs(color = "species") +
+  scale_x_continuous(limits = c(0, 0.4)) +
+  theme(
+   legend.position = c(0.83, 0.8),
+   legend.text = element_text(face = "italic", size = 10)
+  ) 
+
+IDM4_tree
+
+ggsave("../Results/R_output/AT_CRO_CAA_MYB_tree_IDM4.svg", height = 3, width = 4)
+ggsave("../Results/R_output/AT_CRO_CAA_MYB_tree_IDM4.pdf", height = 3, width = 4)
+ggsave("../Results/R_output/AT_CRO_CAA_MYB_tree_IDM4.png", height = 3, width = 4)
+```
+# bHLHs
+## Tree data
+```{r}
+CAA_CRO_bHLH_tree <- read.tree("../Results/Phylogeny/RAxML_bipartitions.bhlh_out")
+CAA_CRO_bHLH_tree
+```
+* BIS: 08G020510, 08G020500, 08G020490, 02G019960, Caacu.v4.4G008460 
+* IDB1: AtBHLH042, 04G007340, Caacu.v4.2G013030, Caacu.v4.2G003530, Caacu.v4.2G003530
+
+
+```{r}
+BHLH_Tip_table <- data.frame(
+  label = CAA_CRO_bHLH_tree$tip.label
+) %>% 
+  mutate(label_2 = case_when(
+    str_detect(label, "AtbHLH|^AT") ~ label,
+    str_detect(label, "CRO") ~ str_remove_all(label, "\\.\\d+$"),
+    str_detect(label, "Caac") ~ str_remove_all(label, "\\.\\d+$"),
+    T ~ ""
+  )) %>% 
+  mutate(label_3 = case_when(
+    str_detect(label, "08G020510") ~ "CrBIS2",
+    str_detect(label, "08G020500") ~ "CrBIS1",
+    str_detect(label, "08G020490") ~ "CrBIS3",
+    str_detect(label, "02G019960") ~ "CrBISp",
+    str_detect(label, "Caacu.v4.4G008460") ~ "CaBIS",
+    str_detect(label, "AtbHLH042") ~ "AtTT8",
+    str_detect(label, "04G007340") ~ "CrIDB1",
+    #str_detect(label, "Caacu.v4.2G013030") ~ "Caacu.v4.2G013030",
+    str_detect(label, "Caacu.v4.2G003530") ~ "2G003530",
+    str_detect(label, "Caacu.v4.7G014480") ~ "CaTT8 (7G014480)",
+    T ~ ""
+  )) %>% 
+  mutate(species = case_when(
+    str_detect(label, "AtbHLH|^AT") ~ "A. thaliana",
+    str_detect(label, "^CRO") ~ "C. roseus",
+    str_detect(label, "^Caac") ~ "C. acuminata", 
+    T ~ "other"
+  )) %>% 
+  mutate(index = 1:n()) 
+
+head(BHLH_Tip_table)
+```
+```{r}
+CAA_CRO_bHLH_tree_nice <- full_join(
+  CAA_CRO_bHLH_tree, BHLH_Tip_table, by = "label"
+)
+```
+
+# Make tree
+## All bHLHs
+```{r}
+CAA_CRO_bHLH_tree_nice %>% 
+  ggtree(
+    layout = "circular",
+    branch.length = "none"
+  ) +
+  geom_tippoint(aes(color = species)) +
+  geom_tiplab(aes(label = label_2), size = 2.25) +
+  geom_nodelab(aes(subset = as.numeric(label) >= 70, label = label),
+               size = 1.8, geom = "text", hjust = 2.2, vjust = -0.75) + 
+  scale_color_manual(values = brewer.pal(8, "Set2")[c(1, 2, 4)]) +
+  theme(
+    legend.position = c(0.1, 0.1),
+    legend.text = element_text(face = "italic")
+  )
+
+ggsave("../Results/R_output/AT_CRO_CAA_bHLH_tree.svg", height = 16, width = 16)
+ggsave("../Results/R_output/AT_CRO_CAA_bHLH_tree.pdf", height = 16, width = 16)
+ggsave("../Results/R_output/AT_CRO_CAA_bHLH_tree.png", height = 16, width = 16)
+```
+```{r}
+CAA_CRO_bHLH_tree_nice %>% 
+  ggtree(
+    layout = "circular",
+    branch.length = "none"
+  ) +
+  geom_tippoint(aes(color = species)) +
+  geom_tiplab(aes(label = label_3), size = 4) +
+  geom_nodelab(aes(subset = as.numeric(label) >= 70, label = label),
+               size = 1.8, geom = "text", hjust = 2.2, vjust = -0.75) + 
+  scale_color_manual(values = brewer.pal(8, "Set2")[c(1, 2, 4)]) +
+  theme(
+    legend.position = c(0.1, 0.1),
+    legend.text = element_text(face = "italic")
+  )
+
+ggsave("../Results/R_output/AT_CRO_CAA_bHLH_tree_small.svg", height = 12, width = 12)
+ggsave("../Results/R_output/AT_CRO_CAA_bHLH_tree_small.pdf", height = 12, width = 12)
+ggsave("../Results/R_output/AT_CRO_CAA_bHLH_tree_small.png", height = 12, width = 12)
+```
+## BIS clade
+* BIS: 08G020510, 08G020500, 08G020490, 02G019960, Caacu.v4.4G008460 
+
+```{r}
+BHLH_Tip_table %>% 
+  filter(str_detect(label, "08G020510|08G020500|08G020490|02G019960|Caacu.v4.4G008460"))
+```
+```{r}
+BIS_mrca_node <- getMRCA(CAA_CRO_bHLH_tree, tip = c("Caacu.v4.4G008460.4", "CRO_08G020510.1",
+                                                    "CRO_02G019960.3", "CRO_08G020490.1", 
+                                                    "CRO_08G020500.1")) 
+
+descendant_tips <- CAA_CRO_bHLH_tree$tip.label[offspring(CAA_CRO_bHLH_tree, BIS_mrca_node)]
+
+subset_tree_BIS <- treeio::drop.tip(
+  CAA_CRO_bHLH_tree_nice, 
+  CAA_CRO_bHLH_tree$tip.label[!(CAA_CRO_bHLH_tree$tip.label %in% descendant_tips)]
+                        )
+```
+
+```{r}
+BIS_tree <- subset_tree_BIS %>% 
+  ggtree(
+    #layout = "circular",
+    #branch.length = "none"
+  ) +
+  geom_tippoint(aes(color = species), size = 3) +
+  geom_tiplab(aes(label = label_3), size = 3, fontface = "italic") +
+  geom_nodelab(aes(
+    subset = label >= 70, 
+                   label = label),
+               size = 3, geom = "text", hjust = 1.2, vjust = -0.75) +
+  xlim(c(0, 1)) +
+  scale_color_manual(values = c(brewer.pal(8, "Set2")[c(2, 4)])) +
+  labs(color = "species") +
+  # theme_classic() +
+  theme(
+   legend.position = "bottom",
+   legend.text = element_text(face = "italic")
+  ) 
+
+BIS_tree
+
+ggsave("../Results/R_output/AT_CRO_CAA_MYB_tree_BIS.svg", height = 4, width = 5)
+ggsave("../Results/R_output/AT_CRO_CAA_MYB_tree_BIS.pdf", height = 4, width = 5)
+ggsave("../Results/R_output/AT_CRO_CAA_MYB_tree_BIS.png", height = 4, width = 5)
+```
+
+## TT8/CrIDB1 clade 
+* IDB1: AtBHLH042, 04G007340, Caacu.v4.2G013030, Caacu.v4.2G003530, Caacu.v4.2G003530
+```{r}
+BHLH_Tip_table %>% 
+  filter(str_detect(label, "AtbHLH042|04G007340|Caacu.v4.2G013030|Caacu.v4.2G003530|Caacu.v4.7G014480"))
+```
+
+```{r}
+IDB_mrca_node <- getMRCA(CAA_CRO_bHLH_tree, tip = c("Caacu.v4.2G003530.3", "Caacu.v4.7G014480.1",
+                                                    "CRO_04G007340.2", "AtbHLH042")) 
+descendant_tips <- CAA_CRO_bHLH_tree$tip.label[offspring(CAA_CRO_bHLH_tree, IDB_mrca_node)]
+
+subset_tree_IDB <- treeio::drop.tip(
+  CAA_CRO_bHLH_tree_nice, 
+  CAA_CRO_bHLH_tree$tip.label[!(CAA_CRO_bHLH_tree$tip.label %in% descendant_tips)]
+                        )
+```
+
+```{r}
+IDB1_tree <- subset_tree_IDB %>% 
+  ggtree(
+    #layout = "circular",
+    #branch.length = "none"
+  ) +
+  geom_tippoint(aes(color = species), size = 3) +
+  geom_tiplab(aes(label = label_3), size = 3, fontface = "italic") +
+  geom_nodelab(aes(
+    subset = label >= 70, 
+                   label = label),
+               size = 3, geom = "text", hjust = 1.2, vjust = -0.75) +
+  xlim(c(0, 1.5)) +
+  scale_color_manual(values = c(brewer.pal(8, "Set2")[c(1, 2, 4)])) +
+  labs(color = "species") +
+  #theme_classic() +
+  theme(
+   legend.position = "bottom",
+   legend.text = element_text(face = "italic")
+  ) 
+
+IDB1_tree
+
+ggsave("../Results/R_output/AT_CRO_CAA_MYB_tree_IDB.svg", height = 4, width = 4)
+ggsave("../Results/R_output/AT_CRO_CAA_MYB_tree_IDB.pdf", height = 4, width = 4)
+ggsave("../Results/R_output/AT_CRO_CAA_MYB_tree_IDB.png", height = 4, width = 4)
+```
+# assemble trees
+```{r}
+wrap_plots(IDM4_tree +
+             theme(legend.position = "top"), 
+           IDB1_tree + 
+             theme(legend.position = "none"), 
+           BIS_tree +
+             theme(legend.position = "none"), 
+           nrow = 3)
+
+ggsave("../Results/R_output/Assembled_TF_trees.svg", height = 6, width = 4)
+ggsave("../Results/R_output/Assembled_TF_trees.png", height = 6, width = 4)
+```
+

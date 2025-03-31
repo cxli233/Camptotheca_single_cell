@@ -1,0 +1,629 @@
+---
+title: "Motif_enrichment"
+author: "Chenxin Li"
+date: "2023-12-11"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Packages 
+```{r}
+library(tidyverse)
+library(Seurat) 
+library(Signac)
+library(readxl)
+
+library(RColorBrewer)
+library(viridis)
+library(rcartocolor)
+
+library(patchwork)
+
+set.seed(666)
+```
+ 
+
+# Data 
+```{r}
+caa_multiome <- readRDS("../Results/R_output/caa_multiome.Rds")
+DefaultAssay(caa_multiome) <- "peaks"
+caa_multiome
+```
+```{r}
+caa_multiome@meta.data %>% 
+  group_by(cell_type) %>% 
+  count()
+```
+## Color strip
+```{r}
+caa_cell_types <- data.frame(
+  id = 0:17
+) %>% 
+  mutate(id = factor(id, levels = c(
+  0, 1, 10, 12, 15, # Meso
+  3, 5, 11, 13,  # Ep
+          # GC
+  2, 4, 14,  17, # V
+  8, # STR
+  7, # S-phase 
+  6, # mitosis 
+  9, 16 # Un
+  ))) %>%
+  mutate(cell_type = case_when(
+   id %in% c(0, 1, 10, 12, 15)
+     ~ "Mesophyll",
+  id == 3 |
+     id == 5 |
+     id == 11 |
+    id == 13 ~ "Epidermis",
+  id == 2 |
+     id == 4 |
+     id == 14 |
+    id == 17 ~ "Vasculature",
+    id == 8 ~ "STR+",
+    id == 6 ~ "Mitosis",
+  id == 7 ~ "S phase",
+  T ~ "Unassigned"
+  )) %>% 
+  mutate(cell_type = factor(cell_type, 
+                            levels = c(
+                              "Mesophyll",
+                              "Epidermis", 
+                             # "Guard cells", 
+                              "Vasculature",
+                             "STR+",
+                             "S phase",
+                              "Mitosis",
+                              "Unassigned"
+                            )))
+
+caa_cell_types
+```
+```{r}
+caa_color_strip <- caa_cell_types %>% 
+  ggplot(aes(x = id, y = "" )) +
+  geom_tile(aes(fill = cell_type)) +
+  scale_fill_manual(values = c(brewer.pal(6, "Accent")[1:2],
+                                brewer.pal(6, "Set2")[6],
+                                brewer.pal(6, "Accent")[6],
+                                brewer.pal(11, "BrBG")[1:2],
+                                "grey80")) +
+  labs(fill = "Cell type") +
+  guides(fill = guide_legend(nrow = 3)) +
+  theme_void() +
+  theme(
+    legend.position = "bottom"
+  )
+
+caa_color_strip
+```
+
+# Find marker peaks 
+```{r}
+cell_types <- c( "Mesophyll",
+       "Epidermis", 
+       "Vasculature",
+       "STR+",
+       "Mitosis",
+       "S phase",
+      "Unassigned")
+
+Marker_peaks <- purrr::map_dfr(
+  .x = cell_types, 
+  .f = FindMarkers, 
+  object = caa_multiome, assay = "peaks",
+  only.pos = T, test.use = "LR", min.pct = 0.05, 
+  latent.var = "nCount_peaks", group.by = "cell_type",
+  verbose = F,
+  .id = "id" 
+)
+
+head(Marker_peaks)
+```
+
+
+```{r}
+Marker_peaks_nice <- Marker_peaks %>%
+  filter(p_val_adj < 0.05) %>% 
+  mutate(peak = row.names(.)) %>% 
+  #filter(str_detect(peak, "\\.\\.\\.")) %>% 
+  #mutate(peak = str_remove_all(peak, "\\.\\.\\.\\d+")) %>% 
+  mutate(class = case_when(
+    id == 1 ~ "Meso peaks", 
+    id == 2 ~ "Epi peaks",
+    id == 3 ~ "Vas peaks",
+    id == 4 ~ "STR+ peaks",
+    id == 5 ~ "Mitosis peaks",
+    id == 6 ~ "S phase peaks",
+    id == 7 ~  "Un peaks"
+  ))
+
+head(Marker_peaks_nice)
+```
+```{r}
+Marker_peaks_nice %>% 
+  group_by(class) %>% 
+  count()
+```
+
+## Write peak coordinates
+```{r}
+Marker_peaks_nice %>% 
+  separate(peak, c("Chr", "start", "end"), sep = "-") %>% 
+  select(Chr, start, end, class) %>% 
+  write_excel_csv("../Results/R_output/leaf_cell_type_marker_peaks.csv")
+```
+
+
+## Find closest genes
+```{r}
+nearest_gene <- read_delim("../Results/bedtools/CAA_leaf_atac_peak_cloest_genes.txt",
+                           delim = "\t", col_names = F)
+
+head(nearest_gene)
+```
+```{r}
+nearest_gene_nice <- nearest_gene %>% 
+  mutate(peak = paste(X1, X2, X3, sep = "-")) %>% 
+  dplyr::rename(gene = X7,
+                distance = X8) %>% 
+  filter(distance <= 5000) %>% 
+  dplyr::select(gene, peak, distance)
+
+head(nearest_gene_nice)
+```
+
+## Pull representative loci
+```{r}
+repr_locus <-  read_delim("../Data/caac_v4.hc_gene_models.repr.gtf", 
+    delim = "\t", escape_double = FALSE, 
+    col_names = FALSE, trim_ws = TRUE, skip = 1)
+
+repr_locus_nice <- repr_locus %>% 
+  filter(X3 == "gene") %>% 
+  select(X1, X4, X5, X9) %>% 
+  separate(X9, c("gene_id", "ID", "Name"), sep = "; ") %>% 
+  mutate(ID2 = str_extract(ID, "nbisL1-mrna-\\d+")) %>% 
+  mutate(v4_ID = str_sub(Name, start = 7, end = -3)) %>%
+  select(-gene_id, -ID, -Name) %>% 
+  mutate(v4_locus = str_remove(v4_ID, "\\.\\d+$"))
+  
+  
+head(repr_locus_nice)
+```
+
+
+## Pull annotation
+```{r}
+func_anno <- read_delim("../Data/caac_v4_anno/caac_v4.functional_annotation.txt", 
+                        delim = "\t", col_names = F)
+
+func_anno <- func_anno %>% 
+  dplyr::rename(v4_ID = X1)
+
+head(func_anno)
+```
+
+
+```{r}
+Marker_peaks_nice_genes <- Marker_peaks_nice %>% 
+  inner_join(nearest_gene_nice, by = "peak") %>% 
+  left_join(repr_locus_nice, by = c("gene"="v4_ID")) %>% 
+  left_join(func_anno, by = c("gene"="v4_ID"))
+
+head(Marker_peaks_nice_genes)
+```
+```{r}
+write_excel_csv(Marker_peaks_nice_genes, "../Results/R_output/leaf_atac_marker_peaks_genes.csv") 
+```
+
+ 
+## Data wrangling for Heat map
+```{r}
+AverageATAC <- AverageExpression(caa_multiome, assay = "peaks") %>% 
+  as.data.frame() %>% 
+  mutate(peak = row.names(.)) %>% 
+  pivot_longer(cols = !peak, names_to = "id", values_to = "ATAC") %>%
+  mutate(id = str_remove(id, "peaks.")) %>% 
+  mutate(id = factor(id, levels = c(
+ 0, 1, 10, 12, 15, # Meso
+  3, 5, 11, 13,  # Ep
+          # GC
+  2, 4, 14,  17, # V
+  8, # STR
+  7, # S-phase 
+  6, # mitosis 
+  9, 16 # Un 
+  ))) %>%
+ mutate(cell_type = case_when(
+   id %in% c(0, 1, 10, 12, 15)
+     ~ "Mesophyll",
+  id == 3 |
+     id == 5 |
+     id == 11 |
+    id == 13 ~ "Epidermis",
+  id == 2 |
+     id == 4 |
+     id == 14 |
+    id == 17 ~ "Vasculature",
+    id == 8 ~ "STR+",
+    id == 6 ~ "Mitosis",
+  id == 7 ~ "S phase",
+  T ~ "Unassigned"
+  )) %>% 
+  mutate(cell_type = factor(cell_type, 
+                            levels = c(
+                              "Mesophyll",
+                              "Epidermis", 
+                             # "Guard cells", 
+                              "Vasculature",
+                             "STR+",
+                             "S phase",
+                              "Mitosis",
+                              "Unassigned"
+                            )))
+
+head(AverageATAC)
+
+top_peaks <- AverageATAC %>% 
+  inner_join(Marker_peaks_nice %>% 
+               select(-id), by = "peak")  
+  
+head(top_peaks)
+```
+## Make heat map 
+```{r}
+summary(top_peaks$ATAC)
+```
+ 
+```{r}
+top_peak_heatmap <- top_peaks %>% 
+  filter(is.na(ATAC) == F) %>% 
+  mutate(ATAC_clipped = case_when(
+    ATAC > quantile(ATAC, 0.9) ~ quantile(ATAC, 0.9),
+    T ~ ATAC
+  )) %>% 
+  filter(str_detect(class, "Meso") == F) %>% 
+  mutate(class = factor(class, levels = c(
+     "Epi peaks",
+     "Vas peaks",
+      "STR+ peaks",
+     "S phase peaks",
+     "Mitosis peaks",
+     "Un peaks"
+  ))) %>% 
+  ggplot(aes(x = id, y = peak)) +
+  facet_grid(class ~ cell_type, scales = "free", space = "free", switch = "y") +
+  geom_tile(aes(fill = ATAC_clipped), color = NA) +
+  scale_fill_gradientn(colors = carto_pal(7, "Sunset"), breaks = c(0.3, 0.6)) +
+  labs(y = "peaks",
+       x = "cluster",
+       fill = "Normalized\nATAC signal ") +
+  theme_classic() +
+  theme(text = element_text(size = 10),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        legend.position = "top",
+        legend.key.height = unit(0.7, "lines"),
+        legend.key.width = unit(0.7, "lines"),
+        strip.text.y.left = element_blank(),
+        strip.text.x = element_blank(),
+        strip.background = element_blank()
+        )
+
+top_peak_heatmap
+```
+ 
+
+```{r}
+wrap_plots(top_peak_heatmap, 
+           caa_color_strip +
+             labs(fill = NULL) +
+             facet_grid(.~cell_type,scales = "free", space = "free", switch = "y") +
+  theme(strip.text.x.top = element_blank(),
+        legend.position = "none"), 
+  nrow = 2, heights = c(1, 0.02)) 
+
+ggsave("../Results/R_output/top_peak_heatmap.svg", height = 3, width = 3.5, bg = "white")
+ggsave("../Results/R_output/top_peak_heatmap.png", height = 3, width = 3.5, bg = "white")
+```
+
+# Check some examples with coverage plot 
+
+## STR+ 
+```{r}
+Marker_peaks_nice %>% 
+  filter(str_detect(class, "STR+"))
+```
+
+```{r}
+DefaultAssay(caa_multiome) <- "peaks" 
+#caa_multiome
+```
+
+```{r}
+CoveragePlot(caa_multiome, region = "Chr10-17862093-17863055", 
+             extend.upstream = 5000, extend.downstream = 5000,
+             group.by = "cell_type"
+             ) &
+ scale_fill_manual(values = c(brewer.pal(6, "Accent")[1:2],
+                                brewer.pal(6, "Set2")[6],
+                                brewer.pal(6, "Accent")[6],
+                                brewer.pal(11, "BrBG")[1:2],
+                                "grey80"))
+
+ggsave("../Results/R_output/STR_plus_example.svg", height = 3, width = 5)
+ggsave("../Results/R_output/STR_plus_example.png", height = 3, width = 5)
+```
+
+
+# Write bed files for MEME 
+```{r}
+Marker_peaks_nice %>% 
+  filter(str_detect(class, "Vas")) %>% 
+  separate(peak, c("Chr", "start", "end"), sep = "-", remove = F) %>% 
+  arrange(Chr, start, end) %>% 
+  select(Chr, start, end, peak) %>% 
+  write_delim("../Results/R_output/top_vas_peaks.bed", delim = "\t", col_names = F)
+```
+
+```{r}
+Marker_peaks_nice %>% 
+  filter(str_detect(class, "STR")) %>% 
+  separate(peak, c("Chr", "start", "end"), sep = "-", remove = F) %>% 
+  arrange(Chr, start, end) %>% 
+  select(Chr, start, end, peak) %>% 
+  write_delim("../Results/R_output/top_STR_peaks.bed", delim = "\t", col_names = F)
+```
+
+# Save object 
+```{r}
+saveRDS(caa_multiome, "../Results/R_output/caa_multiome.Rds")
+```
+
+# Check expression of genes closest to STR+ marker peaks 
+```{r}
+STR_plus_peaks_nearest <- Marker_peaks_nice_genes %>% 
+  filter(str_detect(class, "STR"))
+
+head(STR_plus_peaks_nearest)
+```
+
+```{r}
+STR_plus_peaks_nearest %>% 
+  group_by(gene) %>% 
+  count() %>% 
+  nrow()
+```
+
+170 genes 
+
+```{r}
+STR_plus_peaks_nearest %>% 
+  group_by(gene) %>% 
+  slice_min(order_by = distance, n = 1) %>% 
+  ggplot(aes(x = distance+1)) +
+  geom_histogram(bins = 100) +
+  scale_x_log10() +
+  theme_classic()
+```
+
+```{r}
+STR_peak_genes <- STR_plus_peaks_nearest %>% 
+  group_by(X4) %>% 
+  slice_min(order_by = distance) %>% 
+  ungroup() %>% 
+  distinct(gene, .keep_all = T)
+
+STR_peak_genes
+```
+## Make heatmap  
+```{r}
+DefaultAssay(caa_multiome) <- "RNA"
+peak_gene_dot <- DotPlot(caa_multiome, features = STR_peak_genes$ID2)$data 
+```
+
+```{r}
+nearest_dot_peak_exp <- peak_gene_dot %>% 
+  group_by(features.plot) %>% 
+  slice_max(n = 1, order_by = avg.exp.scaled) %>% 
+  dplyr::select(features.plot, id)  %>% 
+  mutate(order_y = as.numeric(id)) %>% 
+  dplyr::rename(peak_cluster = id) 
+
+head(nearest_dot_peak_exp)
+```
+```{r}
+dim(nearest_dot_peak_exp)
+```
+
+```{r}
+nearest_genes_heat <- peak_gene_dot %>% 
+  left_join(nearest_dot_peak_exp, by = "features.plot") %>% 
+  mutate(features.plot = reorder(features.plot, -order_y)) %>% 
+  ggplot(aes(x = id, y = features.plot)) +
+  geom_tile(aes(fill = avg.exp.scaled)) +
+  scale_fill_gradientn(colors = brewer.pal(8, "YlGnBu"), breaks = c(-2, 0, 2)) +
+  #scale_fill_viridis(option = "A", begin = 0, end = 0.9) +
+  labs(x = "Cluster",
+       y = "Genes",
+       fill = "Avg. Exp.",
+       title = "Genes nearest to a STR+ peak") + 
+  theme_classic() +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text = element_text(color = "black"),
+        legend.key.height = unit(0.7, "lines"),
+        legend.key.width = unit(0.7, "lines"),
+        title = element_text(size = 10),
+        legend.position = "top")
+
+wrap_plots(nearest_genes_heat, caa_color_strip + 
+             theme(legend.position = "none"),
+           nrow = 2, heights = c(1, 0.03))
+
+ggsave("../Results/R_output/STR_plus_nearest_genes_heat.svg", height = 3, width = 3.5)
+ggsave("../Results/R_output/STR_plus_nearest_genes_heat.png", height = 3, width = 3.5)
+```
+
+
+
+## Control experiment with 121 genes
+```{r}
+random_genes <- sample(row.names(caa_multiome), size = 121, replace = F)
+random_gene_dot <- DotPlot(caa_multiome, features = random_genes)$data 
+
+random_dot_peak_exp <- random_gene_dot %>% 
+  group_by(features.plot) %>% 
+  slice_max(n = 1, order_by = avg.exp.scaled) %>% 
+  dplyr::select(features.plot, id)  %>% 
+  mutate(order_y = as.numeric(id)) %>% 
+  dplyr::rename(peak_cluster = id) 
+```
+
+```{r}
+random_genes_heat <- random_gene_dot %>% 
+  left_join(random_dot_peak_exp, by = "features.plot") %>% 
+  mutate(features.plot = reorder(features.plot, -order_y)) %>% 
+  ggplot(aes(x = id, y = features.plot)) +
+  geom_tile(aes(fill = avg.exp.scaled)) +
+  scale_fill_gradientn(colors = brewer.pal(8, "YlGnBu")) +
+  labs(x = "Cluster",
+       y = "Genes",
+       fill = "Avg. Exp.",
+       title = "123 random genes") + 
+  theme_classic() +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text = element_text(color = "black"),
+        legend.key.height = unit(0.7, "lines"),
+        legend.position = "top")
+
+wrap_plots(random_genes_heat, caa_color_strip,
+           nrow = 2, heights = c(1, 0.05))
+
+ggsave("../Results/R_output/random_123_genes_heat.svg", height = 4, width = 5)
+ggsave("../Results/R_output/random_123_genes_heat.png", height = 4, width = 5)
+```
+## Enrichment tests
+```{r}
+obs.1 <- nearest_dot_peak_exp %>% 
+  filter(peak_cluster == 8) %>% 
+  nrow()
+
+obs.2 <- nrow(nearest_dot_peak_exp) - obs.1
+
+exp.1 <- random_dot_peak_exp %>% 
+  filter(peak_cluster == 8) %>% 
+  nrow()
+
+exp.p.1 <- exp.1/ nrow(random_dot_peak_exp) 
+exp.p.2 <- 1- exp.p.1
+
+chisq.test(x = c(obs.1, obs.2), 
+           p = c(exp.p.1, exp.p.2))
+```
+Observed: 34/121 = 28%
+Expected: 3% 
+28/3 = 9.3-fold enrichment over background.
+
+# TFs in STR+ 
+```{r}
+CAA_CRO_MYB_tree <- treeio::read.tree("../Results/Phylogeny/RAxML_bipartitions.myb_out")
+Tip_table <- data.frame(
+  label = CAA_CRO_MYB_tree$tip.label
+) %>% 
+  mutate(label_2 = case_when(
+    str_detect(label, "Arabidopsis") ~ str_extract(label, "MYB\\d+"),
+    str_detect(label, "CRO") ~ str_remove_all(label, "\\.\\d+$"),
+    str_detect(label, "Caac") ~ str_remove_all(label, "\\.\\d+$"),
+    T ~ ""
+  )) %>% 
+  mutate(label_3 = case_when(
+    str_detect(label, "05G006800") ~ "CrIDM1",
+     str_detect(label, "MYB123") ~ "AtTT2",
+     str_detect(label, "Caacu.v4.13G012370") ~ "CaMYB123",
+    str_detect(label, "MYB005") ~ "AtMYB5",
+    str_detect(label, "02G002580") ~ "CrIDM4",
+    str_detect(label, "Caacu.v4.17G000670") ~ "CaMYB5",
+    T ~ ""
+  )) %>% 
+  mutate(species = case_when(
+    str_detect(label, "Arabidopsis") ~ "A. thaliana",
+    str_detect(label, "^CRO") ~ "C. roseus",
+    str_detect(label, "^Caac") ~ "C. acuminata", 
+    T ~ "other"
+  )) %>% 
+  mutate(index = 1:n()) 
+
+head(Tip_table)
+```
+```{r}
+caa_mybs <- Tip_table %>% 
+  filter(species == "C. acuminata") %>% 
+  left_join(repr_locus_nice, by = c("label" = "v4_ID")) %>% 
+  left_join(func_anno, by = c("label" = "v4_ID")) %>% 
+  left_join(v3_v4_convertion_nice, by = "v4_locus")
+
+head(caa_mybs)
+```
+```{r}
+MYB_leaf_exp <- DotPlot(CAA_L2, features = unique(caa_mybs$ID2))$data 
+
+MYB_leaf_exp_peak_exp <- MYB_leaf_exp %>% 
+  group_by(features.plot) %>% 
+  slice_max(n = 1, order_by = avg.exp.scaled) %>% 
+  dplyr::select(features.plot, id)  %>% 
+  mutate(order_y = as.numeric(id)) %>% 
+  dplyr::rename(peak_cluster = id) 
+
+head(MYB_leaf_exp_peak_exp)
+```
+```{r}
+MYB_leaf_exp_peak_exp %>% 
+  filter(peak_cluster == 8)
+```
+ 
+```{r}
+MYB5_paralog_heat <- DotPlot(CAA_L2, features = "nbisL1-mrna-28458")$data %>% 
+  mutate(internal.tag = row.names(.)) %>% 
+  arrange(internal.tag) %>% 
+  mutate(ID2 = case_when(
+    is.na(features.plot) ~ str_remove_all(internal.tag, "rna_"),
+    T ~ features.plot %>% as.character()
+  )) %>% 
+  left_join(caa_mybs, by = "ID2") %>%
+  ggplot(aes(y = label_2, x = id)) +
+  geom_point(aes(size = pct.exp, fill = avg.exp.scaled), shape = 21, color = "white") +
+  scale_fill_viridis(option = "A", begin = 0, end = 0.9) +
+  guides(size = guide_legend(override.aes = list(fill = "grey40"), order = 1)) +
+  labs(x = "Cluster",
+       y = NULL, 
+       fill = "Average Exp.",
+       size = "% Expressed") +
+  theme_classic() +
+  theme(text = element_text(color = "black"),
+        axis.text = element_text(color = "black"),
+        axis.text.y.left = element_text(hjust = 0.5),
+        legend.key.height = unit(0.7, "lines"),
+        legend.key.width = unit(0.7, "lines"),
+        legend.box = "horizontal",
+        #legend.direction = "horizontal",
+        legend.position = "right") 
+
+wrap_plots(MYB5_paralog_heat, caa_color_strip,
+           nrow = 2, heights = c(1, 0.08))
+
+ggsave("../Results/R_output/leaf_myb5_paralog_in_leaf.svg", height = 3, width = 7)
+ggsave("../Results/R_output/leaf_myb5_paralog_in_leaf.png", height = 3, width = 7)
+```
+
+ 
+
+ 
+
+` 
+

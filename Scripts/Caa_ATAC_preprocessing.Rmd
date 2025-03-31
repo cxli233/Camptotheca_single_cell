@@ -1,0 +1,590 @@
+---
+title: "Caac_leaf_ATAC_preprocessing"
+author: "Chenxin Li"
+date: "2023-12-07"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Packages 
+```{r}
+library(tidyverse)
+library(Seurat) 
+library(Signac)
+library(GenomicRanges)
+
+library(readxl)
+
+
+library(RColorBrewer)
+library(viridis)
+library(rcartocolor)
+
+library(patchwork)
+```
+
+# Data 
+
+## Read peaks 
+```{r}
+macs2_peaks <- read_delim("../Results/bedtools/CAA_leaf_atac.bed",
+                          delim = "\t", col_names = F, col_types = cols())
+
+macs2_peaks <- macs2_peaks %>% 
+  filter(str_detect(X1, "Chr"))
+
+macs2_peaks$X4 <- "name"
+head(macs2_peaks)
+```
+
+
+```{r}
+macs2_peaks %>% 
+  group_by(X1) %>% 
+  count() %>% 
+  arrange(-n)
+
+nrow(macs2_peaks)
+```
+
+
+```{r}
+macs2_peaks %>% 
+  mutate(Length = X3 - X2) %>% 
+  ggplot(aes(x = Length)) +
+  geom_histogram(binwidth = 50, color = "white", 
+                 fill = rgb(180, 62, 68, maxColorValue = 255),
+                 alpha = 0.9) +
+  labs(x = "Length of ATAC peaks (bp)") +
+  theme_classic() +
+  coord_cartesian(xlim = c(100, 1500)) +
+  ggtitle("n = 48456 peaks")
+
+ggsave("../Results/R_output/caa_ATAC_peak_length_hist.svg", height = 3, width = 3)
+ggsave("../Results/R_output/caa_ATAC_peak_length_hist.png", height = 3, width = 3)
+```
+
+
+```{r}
+macs2_peaks %>% 
+  mutate(Length = X3 - X2) %>% 
+  summarise(median = median(Length),
+            mean = mean(Length))
+```
+## Produce GRange from bed
+```{r}
+macs2_peaks_granges <- lapply(split(macs2_peaks, macs2_peaks$X4), function(i){
+  GRanges(seqnames = i$X1,
+          ranges = IRanges(
+            start = i$X2,
+            end = i$X3
+          ))
+})
+ 
+macs2_peaks_granges
+```
+Remove un-anchored scaffold if need. 
+```{r}
+macs2_peaks_granges_nice <- macs2_peaks_granges$name
+# macs2_peaks_granges_nice <- keepStandardChromosomes(macs2_peaks_granges$name, 
+#                                                    pruning.mode = "coarse")
+macs2_peaks_granges_nice
+```
+
+## BF/BG
+```{r}
+# BF_BG_counts <- Read10X_h5(filename = "../Results/BF_BG_arc_out/filtered_feature_bc_matrix.h5")
+```
+
+ 
+```{r}
+BF_BG_counts <- CountFragments(fragments = "../Results/CAA_BF_cellranger_arc_out/atac_fragments.tsv.gz")
+head(BF_BG_counts)
+```
+
+```{r}  
+BF_BG_frags <- CreateFragmentObject(
+  path = "../Results/CAA_BF_cellranger_arc_out/atac_fragments.tsv.gz",
+  cells = BF_BG_counts$CB
+)
+
+BF_BG_matrix <- FeatureMatrix(
+ fragments = BF_BG_frags,
+ features = macs2_peaks_granges_nice,
+ cells = BF_BG_counts$CB
+)
+```
+
+
+```{r}
+BF_BG_chromatin <- CreateChromatinAssay(
+  counts = BF_BG_matrix,
+  fragments = BF_BG_frags,
+  min.features = 1000,
+  min.cells = 50
+) 
+
+BF_BG <- CreateSeuratObject(
+  counts = BF_BG_chromatin, 
+  assay = "peaks"
+  )
+
+BF_BG
+```
+
+## BH/BI
+```{r}
+# BH_BI_counts <- Read10X_h5(filename = "../Results/BH_BI_arc_out/filtered_feature_bc_matrix.h5")
+BH_BI_counts <- CountFragments(fragments = "../Results/CAA_BH_cellranger_arc_out/atac_fragments.tsv.gz")
+```
+
+```{r}
+BH_BI_frags <- CreateFragmentObject(
+  path = "../Results/CAA_BH_cellranger_arc_out/atac_fragments.tsv.gz",
+  cells = BH_BI_counts$CB
+)
+```
+
+```{r}
+BH_BI_matrix <- FeatureMatrix(
+  fragments = BH_BI_frags,
+  features = macs2_peaks_granges_nice,
+  cells = BH_BI_counts$CB
+)
+```
+
+```{r}
+BH_BI_chromatin <- CreateChromatinAssay(
+  counts = BH_BI_matrix,
+  fragments = BH_BI_frags, 
+  min.features = 1000,
+  min.cells = 50
+) 
+
+BH_BI <- CreateSeuratObject(
+  counts = BH_BI_chromatin, 
+  assay = "peaks"
+  )
+
+BH_BI
+```
+
+# Filter nuclei
+```{r}
+blank <- data.frame(
+  x = 1:10,
+  y = 1:10
+) %>% 
+  ggplot(aes(x = x, y = y)) +
+  theme_void()
+```
+
+ 
+
+## BF/BG
+```{r}
+BF_scatter <- BF_BG@meta.data %>% 
+  ggplot(aes(x = nCount_peaks, y = nFeature_peaks)) +
+  geom_point(alpha = 0.5) +
+  geom_vline(xintercept = 2000, color = "red2") +
+  #geom_vline(xintercept = 100000, color = "red2") +
+  geom_hline(yintercept = 2000, color = "blue1") +
+  #geom_hline(yintercept = 45000, color = "blue1") +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(x = "number of fragments",
+       y = "number of peaks") + 
+  theme_classic()
+
+BF_hist1 <- BF_BG@meta.data %>% 
+  ggplot(aes(x = nCount_peaks)) +
+  geom_histogram(bins = 100) +
+  geom_vline(xintercept = 2000, color = "red2") +
+  #geom_vline(xintercept = 100000, color = "red2") +
+  scale_x_log10() +
+  labs(x = "number of fragments") + 
+  theme_classic()
+
+BF_hist2 <- BF_BG@meta.data %>% 
+  ggplot(aes(x = nFeature_peaks)) +
+  geom_histogram(bins = 100) +
+  geom_vline(xintercept = 2000, color = "blue1") +
+  #geom_vline(xintercept = 45000, color = "blue1") +
+  scale_x_log10() +
+  labs(x = "number of peaks") +
+  theme_classic() +
+  coord_flip()
+
+wrap_plots(
+  BF_hist1, blank,
+  BF_scatter, BF_hist2,
+  nrow = 2, ncol = 2, 
+  widths = c(1, 0.2), 
+  heights = c(0.2, 1)
+)
+
+ggsave("../Results/R_output/BF_filtering.svg", height = 4, width = 5, bg = "white")
+ggsave("../Results/R_output/BF_filtering.png", height = 4, width = 5, bg = "white")
+```
+
+## BH/BI
+```{r}
+BH_scatter <- BH_BI@meta.data %>% 
+  ggplot(aes(x = nCount_peaks, y = nFeature_peaks)) +
+  geom_point(alpha = 0.5) +
+  geom_vline(xintercept = 2000, color = "red2") +
+  #geom_vline(xintercept = 100000, color = "red2") +
+  geom_hline(yintercept = 2000, color = "blue1") +
+  #geom_hline(yintercept = 45000, color = "blue1") +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(x = "number of fragments",
+       y = "number of peaks") + 
+  theme_classic()
+
+BH_hist1 <- BH_BI@meta.data %>% 
+  ggplot(aes(x = nCount_peaks)) +
+  geom_histogram(bins = 100) +
+  geom_vline(xintercept = 2000, color = "red2") +
+  #geom_vline(xintercept = 100000, color = "red2") +
+  scale_x_log10() +
+  labs(x = "number of fragments") + 
+  theme_classic()
+
+BH_hist2 <- BH_BI@meta.data %>% 
+  ggplot(aes(x = nFeature_peaks)) +
+  geom_histogram(bins = 100) +
+  geom_vline(xintercept = 2000, color = "blue1") +
+  #geom_vline(xintercept = 45000, color = "blue1") +
+  scale_x_log10() +
+  labs(x = "number of peaks") + 
+  theme_classic() +
+  coord_flip()
+
+wrap_plots(
+  BH_hist1, blank,
+  BH_scatter, BH_hist2,
+  nrow = 2, ncol = 2, 
+  widths = c(1, 0.2), 
+  heights = c(0.2, 1)
+)
+
+ggsave("../Results/R_output/BH_filtering.svg", height = 4, width = 5, bg = "white")
+ggsave("../Results/R_output/BH_filtering.png", height = 4, width = 5, bg = "white")
+```
+```{r}
+BH_BI_sub <- subset(
+  x = BH_BI, 
+  nCount_peaks > 2000 &
+    nFeature_peaks > 2000
+)
+
+BH_BI_sub
+```
+
+
+```{r}
+BF_BG_sub <- subset(
+  x = BF_BG, 
+  nCount_peaks > 2000 &
+    nFeature_peaks > 2000
+)
+
+BF_BG_sub
+```
+
+# Summary stats
+```{r}
+per_barcode_BF <- read_csv("../Results/CAA_BF_cellranger_arc_out/per_barcode_metrics.csv")
+per_barcode_BH <- read_csv("../Results/CAA_BH_cellranger_arc_out/per_barcode_metrics.csv")
+```
+
+```{r}
+BF_metrics <- per_barcode_BF %>% 
+  filter(barcode %in% colnames(BF_BG_sub)) %>% 
+  mutate(FRiP = atac_peak_region_fragments / atac_fragments) %>%
+  mutate(TSS = atac_TSS_fragments / atac_fragments) %>% 
+  summarise(
+    mean_PRiP = mean(FRiP),
+    median_FRiP = median(FRiP),
+    mean_TSS = mean(TSS),
+    median_TSS = median(TSS)
+  ) %>% 
+  mutate(ID = "BF")
+
+BH_metrics <- per_barcode_BH %>% 
+  filter(barcode %in% colnames(BH_BI_sub)) %>% 
+  mutate(FRiP = atac_peak_region_fragments / atac_fragments) %>%
+  mutate(TSS = atac_TSS_fragments / atac_fragments) %>% 
+  summarise(
+    mean_PRiP = mean(FRiP),
+    median_FRiP = median(FRiP),
+    mean_TSS = mean(TSS),
+    median_TSS = median(TSS)
+  ) %>% 
+  mutate(ID = "BH")
+```
+
+
+```{r}
+lib_summary <- data.frame(
+  ID = c("BF", "BH"),
+  cells = c(ncol(BF_BG_sub), 
+            ncol(BH_BI_sub)),
+  median_frags = c(summary(BF_BG_sub$nCount_peaks)[3],
+                 summary(BF_BG_sub$nFeature_peaks)[3]),
+  median_peaks = c(summary(BH_BI_sub$nCount_peaks)[3],
+                   summary(BH_BI_sub$nFeature_peaks)[3])
+) %>% 
+  inner_join(
+    rbind(
+      BF_metrics,
+      BH_metrics
+    ),
+    by = "ID"
+  )
+
+lib_summary
+
+write_excel_csv(lib_summary, "../Results/R_output/ATAC_lib_summary.csv")
+```
+
+## Normalize and dimension reduction 
+```{r}
+BF_BG_sub <- FindVariableFeatures(BF_BG_sub, assay = "peaks", nfeatures = 5000)
+BF_BG_sub <- FindTopFeatures(BF_BG_sub, assay = "peaks", min.cutoff = NULL)
+BF_BG_sub <- RunTFIDF(BF_BG_sub)
+BF_BG_sub <- RunSVD(BF_BG_sub)
+```
+
+```{r}
+BH_BI_sub <- FindVariableFeatures(BH_BI_sub, assay = "peaks", nfeatures = 5000)
+BH_BI_sub <- FindTopFeatures(BH_BI_sub, assay = "peaks", min.cutoff = NULL)
+BH_BI_sub <- RunTFIDF(BH_BI_sub)
+BH_BI_sub <- RunSVD(BH_BI_sub)
+```
+
+# Merge
+```{r}
+rm(BF_BG)
+rm(BH_BI)
+
+BF_BG_sub$run <- "BF"
+BH_BI_sub$run <- "BH"
+
+caa_leaf_ATAC <- merge(
+  BF_BG_sub,
+  BH_BI_sub)
+
+unique(rownames(caa_leaf_ATAC) %>% str_sub(end = 5)) # chromosome names of multiome object 
+```
+
+ 
+```{r}
+caa_leaf_ATAC <- FindVariableFeatures(caa_leaf_ATAC, nfeatures = 3000)
+caa_leaf_ATAC <- FindTopFeatures(caa_leaf_ATAC, min.cutoff = NULL)
+caa_leaf_ATAC <- RunTFIDF(caa_leaf_ATAC, verbose = F)
+caa_leaf_ATAC <- RunSVD(caa_leaf_ATAC, verbose = F)
+caa_leaf_ATAC <- RunUMAP(caa_leaf_ATAC, reduction = "lsi", dims = 2:50) 
+```
+
+```{r}
+caa_leaf_ATAC
+DimPlot(caa_leaf_ATAC, group.by = "run") +
+  ggtitle("Merged")
+```
+
+# Integrate
+```{r}
+ATAC_integration_anchors <- FindIntegrationAnchors(
+  object.list = list(BF_BG_sub, BH_BI_sub),
+  anchor.features = rownames(caa_leaf_ATAC),
+  reduction = "rlsi",
+  dims = 2:50
+)
+
+caa_leaf_ATAC_int <- IntegrateEmbeddings(
+  anchorset = ATAC_integration_anchors, 
+  reductions = caa_leaf_ATAC[["lsi"]],
+  new.reduction.name = "integrated_lsi",
+  dims.to.integrate = 2:50
+)
+```
+
+```{r}
+caa_leaf_ATAC_int <- RunUMAP(caa_leaf_ATAC_int, reduction = "integrated_lsi", dims = 2:50, 
+                    min.dist = 0.001, repulsion.strength = 1, n.neighbors = 30, spread = 1)
+caa_leaf_ATAC_int <- FindNeighbors(object = caa_leaf_ATAC_int, reduction = 'integrated_lsi', dims = 2:30)
+caa_leaf_ATAC_int <- FindClusters(object = caa_leaf_ATAC_int, verbose = FALSE, algorithm = 3)
+```
+
+```{r}
+UMAP_ATAC <- DimPlot(caa_leaf_ATAC_int,
+                 label = T, label.size = 5, repel = T) + 
+  theme_void() +
+  theme(
+    text = element_text(size = 14, color = "black", face = "bold"),
+    legend.position = "none"
+  )
+
+UMAP_ATAC
+
+ggsave("../Results/R_output/UMAP_ATAC.svg", height = 3, width = 3, bg = "white")
+ggsave("../Results/R_output/UMAP_ATAC.png", height = 3, width = 3, bg = "white")
+```
+
+```{r}
+DimPlot(caa_leaf_ATAC_int, 
+        label = T, label.size = 5, repel = T, split.by = "run") +
+  theme_void() +
+  theme(
+    text = element_text(size = 14, color = "black", face = "bold"),
+    legend.position = "none",
+    title = element_text(size = 10)
+  ) +
+  ggtitle("Grouped by replicates\n")  
+  
+
+ggsave("../Results/R_output/UMAP_ATAC_by_rep.svg", height = 3, width = 8, bg = "white")
+ggsave("../Results/R_output/UMAP_ATAC_by_rep.png", height = 3, width = 8, bg = "white")
+```
+
+```{r}
+caa_leaf_ATAC_int
+saveRDS(caa_leaf_ATAC_int, "../Results/R_output/CAA_L2_ATAC.Rds")
+caa_leaf_ATAC_int <- readRDS("../Results/R_output/CAA_L2_ATAC.Rds")
+```
+# Integrate with RNA
+```{r}
+CAA_L2 <- readRDS("../Results/R_output/CAA_L2_strigent.Rds")
+DefaultAssay(CAA_L2) <- "RNA"
+CAA_L2
+```
+```{r}
+colnames(caa_leaf_ATAC_int) %>% head()
+colnames(CAA_L2) %>% head()
+```
+
+
+## Subset shared barcodes 
+```{r}
+shared_cells <- intersect(
+  colnames(CAA_L2),
+  str_remove(colnames(caa_leaf_ATAC_int), "-1")
+) 
+
+CAA_L2@meta.data$barcode <- row.names(CAA_L2@meta.data)
+caa_leaf_ATAC_int@meta.data$barcode <- row.names(caa_leaf_ATAC_int@meta.data)
+
+CAA_L2$cell <- colnames(CAA_L2)
+caa_leaf_ATAC_int$cell<- str_remove(colnames(caa_leaf_ATAC_int), "-1")
+
+
+CAA_L2_subset <- subset(
+  x = CAA_L2,
+  subset = cell %in% shared_cells 
+)
+
+caa_leaf_ATAC_int_subset <- subset(
+  x = caa_leaf_ATAC_int,
+  subset = cell %in% shared_cells 
+)
+
+dim(CAA_L2_subset)
+dim(caa_leaf_ATAC_int_subset)
+```
+
+```{r}
+caa_leaf_ATAC_int_subset_renamed <- RenameCells(caa_leaf_ATAC_int_subset, 
+            new.names = str_remove(colnames(caa_leaf_ATAC_int_subset), "-1"))
+```
+
+## Append object 
+```{r}
+caa_multiome <- CAA_L2_subset 
+DefaultAssay(caa_multiome) <- "RNA"
+caa_multiome[["peaks"]] <- caa_leaf_ATAC_int_subset_renamed[["peaks"]]
+
+caa_multiome
+```
+
+# Joint UMAP visualization
+## RNA
+```{r}
+DefaultAssay(caa_multiome) <- "RNA"
+
+caa_multiome <- SCTransform(caa_multiome, verbose = FALSE) %>% 
+  RunPCA(verbose = F) %>% 
+  RunUMAP(dims = 1:50, reduction.name = 'umap.rna', reduction.key = 'rnaUMAP_',
+          min.dist = 0.001, repulsion.strength = 1, n.neighbors = 30, spread = 1)
+```
+
+## ATAC 
+```{r}
+DefaultAssay(caa_multiome) <- "peaks" 
+caa_multiome <- RunTFIDF(caa_multiome)
+caa_multiome <- FindVariableFeatures(caa_multiome, nfeatures = 3000)
+caa_multiome <- FindTopFeatures(caa_multiome, min.cutoff = NULL)
+caa_multiome <- RunSVD(caa_multiome)
+caa_multiome <- RunUMAP(caa_multiome, reduction = "lsi", 
+                        dims = 2:50, reduction.name = "umap.atac", reduction.key = "atacUMAP_",
+                        min.dist = 0.001, repulsion.strength = 1, n.neighbors = 30, spread = 1)
+```
+
+## Joint
+```{r}
+caa_multiome <- FindMultiModalNeighbors(
+  caa_multiome, reduction.list = list("pca", "lsi"), 
+  dims.list = list(1:50, 2:50)
+)
+
+caa_multiome <- RunUMAP(caa_multiome, 
+                        nn.name = "weighted.nn", reduction.name = "wnn.umap",
+                        reduction.key = "wnnUMAP_",
+                        min.dist = 0.001, repulsion.strength = 1, n.neighbors = 30, spread = 1,
+                        verbose = F)
+```
+# UMAPs
+```{r}
+Multi_RNA_umap <- DimPlot(caa_multiome, reduction = "umap.rna", 
+                          group.by = "cell_type") +
+  ggtitle("RNA") 
+
+Multi_ATAC_umap <- DimPlot(caa_multiome, reduction = "umap.atac", 
+                          group.by = "cell_type") +
+  ggtitle("ATAC") 
+
+Multi_joint_umap <- DimPlot(caa_multiome, reduction = "wnn.umap", 
+                          group.by = "cell_type") +
+  ggtitle("Joint")
+```
+
+```{r}
+wrap_plots(
+ Multi_RNA_umap,
+ Multi_ATAC_umap,
+ Multi_joint_umap,
+ nrow = 1, guides = "collect"
+) &
+   scale_color_manual(values = c(brewer.pal(6, "Accent")[1:2],
+                                brewer.pal(6, "Set2")[6],
+                                brewer.pal(6, "Accent")[6],
+                                brewer.pal(11, "BrBG")[2:1],
+                                "grey80"))  &
+  theme_void() &
+  theme(
+    legend.position = "bottom",
+    plot.margin = margin(r = 1, l = 1, unit = "lines"),
+    text = element_text(size = 10)
+  ) 
+
+ggsave("../Results/R_output/CAA_multiome_UMAP.svg", height = 2.5, width = 6, bg = "white")
+ggsave("../Results/R_output/CAA_multiome_UMAP.png", height = 2.5, width = 6, bg = "white")
+```
+```{r}
+saveRDS(caa_multiome, "../Results/R_output/caa_multiome.Rds")
+```
+

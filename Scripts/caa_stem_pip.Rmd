@@ -1,0 +1,1002 @@
+---
+title: "caa_stem_pip"
+author: "Chenxin Li"
+date: "2024-10-28"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# packages 
+```{r}
+library(tidyverse)
+library(Seurat) 
+
+library(readxl)
+
+library(RColorBrewer)
+library(viridis)
+library(rcartocolor)
+
+library(patchwork)
+```
+# Read starsolo output 
+```{r}
+BO_raw <- Read10X("../Results/CAA_BOGeneFull/raw/")
+BP_raw <- Read10X("../Results/CAA_BPGeneFull/raw/")
+```
+
+```{r}
+BO <- CreateSeuratObject(counts = BO_raw, min.cells = 3, min.features = 500,
+                         project = "BO")
+
+BP <- CreateSeuratObject(counts = BP_raw, min.cells = 3, min.features = 500,
+                         project = "BP")
+```
+
+```{r}
+BO
+BP
+```
+# Filtering
+```{r}
+blank <- data.frame(
+  x = 1:10,
+  y = 1:10
+) %>% 
+  ggplot(aes(x = x, y = y)) +
+  theme_void()
+```
+
+## BO 
+```{r}
+BO_scatter <- BO@meta.data %>% 
+  ggplot(aes(x = nCount_RNA, y = nFeature_RNA)) +
+  geom_point(alpha = 0.5) +
+  geom_vline(xintercept = 500, color = "red2") +
+  geom_vline(xintercept = 30000, color = "red2") +
+  geom_hline(yintercept = 800, color = "blue1") +
+  geom_hline(yintercept = 10000, color = "blue1") +
+  scale_x_log10() +
+  scale_y_log10() +
+  theme_classic()
+
+BO_hist1 <- BO@meta.data %>% 
+  ggplot(aes(x = nCount_RNA)) +
+  geom_histogram(bins = 100) +
+  geom_vline(xintercept = 500, color = "red2") +
+  geom_vline(xintercept = 30000, color = "red2") +
+  scale_x_log10() +
+  theme_classic()
+
+BO_hist2 <- BO@meta.data %>% 
+  ggplot(aes(x = nFeature_RNA)) +
+  geom_histogram(bins = 100) +
+  geom_vline(xintercept = 800, color = "blue1") +
+  geom_vline(xintercept = 10000, color = "blue1") +
+  scale_x_log10() +
+  theme_classic() +
+  coord_flip()
+
+wrap_plots(
+  BO_hist1, blank,
+  BO_scatter, BO_hist2,
+  nrow = 2, ncol = 2, 
+  widths = c(1, 0.4), 
+  heights = c(0.2, 1)
+)
+
+ggsave("../Results/R_output/BO_filtering.svg", height = 4, width = 5.5, bg = "white")
+ggsave("../Results/R_output/BO_filtering.png", height = 4, width = 5.5, bg = "white")
+```
+```{r}
+BO_sub <- subset(BO, subset = nFeature_RNA > 800 &
+                   nFeature_RNA < 30000 &
+                   nCount_RNA < 10000 &
+                   nCount_RNA > 500)
+
+BO_sub
+```
+
+
+## BP 
+```{r}
+BP_scatter <- BP@meta.data %>% 
+  ggplot(aes(x = nCount_RNA, y = nFeature_RNA)) +
+  geom_point(alpha = 0.5) +
+  geom_vline(xintercept = 500, color = "red2") +
+  geom_vline(xintercept = 30000, color = "red2") +
+  geom_hline(yintercept = 800, color = "blue1") +
+  geom_hline(yintercept = 10000, color = "blue1") +
+  scale_x_log10() +
+  scale_y_log10() +
+  theme_classic()
+
+BP_hist1 <- BP@meta.data %>% 
+  ggplot(aes(x = nCount_RNA)) +
+  geom_histogram(bins = 100) +
+  geom_vline(xintercept = 500, color = "red2") +
+  geom_vline(xintercept = 30000, color = "red2") +
+  scale_x_log10() +
+  theme_classic()
+
+BP_hist2 <- BP@meta.data %>% 
+  ggplot(aes(x = nFeature_RNA)) +
+  geom_histogram(bins = 100) +
+  geom_vline(xintercept = 800, color = "blue1") +
+  geom_vline(xintercept = 10000, color = "blue1") +
+  scale_x_log10() +
+  theme_classic() +
+  coord_flip()
+
+wrap_plots(
+  BP_hist1, blank,
+  BP_scatter, BP_hist2,
+  nrow = 2, ncol = 2, 
+  widths = c(1, 0.4), 
+  heights = c(0.2, 1)
+)
+
+ggsave("../Results/R_output/BP_filtering.svg", height = 4, width = 5.5, bg = "white")
+ggsave("../Results/R_output/BP_filtering.png", height = 4, width = 5.5, bg = "white")
+```
+```{r}
+BP_sub <- subset(BP, subset = nFeature_RNA > 800 &
+                   nFeature_RNA < 30000 &
+                   nCount_RNA < 10000 &
+                   nCount_RNA > 500)
+
+BP_sub
+```
+
+## Summary
+```{r}
+lib_summary <- data.frame(
+  ID = c("BO", "BP"),
+  cells = c(ncol(BO_sub), 
+            ncol(BP_sub)),
+  median_UMI = c(summary(BO_sub$nCount_RNA)[3],
+                 summary(BP_sub$nCount_RNA)[3]),
+  median_genes = c(summary(BO_sub$nFeature_RNA)[3],
+                   summary(BP_sub$nFeature_RNA)[3])
+)
+
+lib_summary
+
+write_excel_csv(lib_summary, "../Results/R_output/stem_lib_summary.csv")
+```
+# Normalize, find variable features 
+```{r}
+BO_sub <- NormalizeData(BO_sub, normalization.method = "LogNormalize", scale.factor = 10000)
+BP_sub <- NormalizeData(BP_sub, normalization.method = "LogNormalize", scale.factor = 10000)
+```
+
+```{r}
+BO_sub <- FindVariableFeatures(BO_sub, selection.method = "vst", nfeatures = 3000)
+BP_sub <- FindVariableFeatures(BP_sub, selection.method = "vst", nfeatures = 3000)
+```
+# Integrate
+```{r}
+RNA.list <- list(BO_sub, BP_sub)
+features <- SelectIntegrationFeatures(object.list = RNA.list, nfeatures = 3000)
+anchors <- FindIntegrationAnchors(object.list = RNA.list, anchor.features = features) 
+CAA_stem <- IntegrateData(anchorset = anchors)
+```
+# Scale data
+```{r}
+CAA_stem <- ScaleData(CAA_stem, verbose = F)
+
+CAA_stem@meta.data$run <- CAA_stem@meta.data$orig.ident
+
+CAA_stem@meta.data %>% 
+  group_by(run) %>% 
+  dplyr::count()
+```
+
+# PCA
+```{r}
+CAA_stem <- RunPCA(CAA_stem, verbose = FALSE, npcs = 50) # run PCA
+
+DimPlot(CAA_stem, reduction = "pca", cols = brewer.pal(8, "Set2")[c(1:3)],
+        split.by = "run", group.by = "run") +
+theme(
+  legend.position = "none"
+)
+```
+# UMAP
+```{r}
+CAA_stem <- RunUMAP(CAA_stem, dims = 1:30, 
+                     min.dist = 0.001, repulsion.strength = 1, 
+                     n.neighbors = 30, spread = 1
+                    ) 
+
+CAA_stem <- FindNeighbors(CAA_stem, reduction = "pca", dims = 1:50)
+CAA_stem <- FindClusters(CAA_stem, resolution = 0.5)
+```
+
+```{r}
+UMAP_RNA <- DimPlot(CAA_stem, reduction = "umap", 
+                 label = T, label.size = 5, repel = T) + 
+  theme_void() +
+  theme(
+    text = element_text(size = 14, color = "black", face = "bold"),
+    legend.position = "none"
+  )
+
+UMAP_RNA
+
+ggsave("../Results/R_output/UMAP_caa_stem_1.svg", height = 3, width = 3, bg = "white")
+ggsave("../Results/R_output/UMAP_caa_stem_1.png", height = 3, width = 3, bg = "white")
+```
+
+```{r}
+DimPlot(CAA_stem, reduction = "umap", 
+        label = T, label.size = 5, repel = T, split.by = "run") +
+  theme_void() +
+  theme(
+    text = element_text(size = 14, color = "black", face = "bold"),
+    legend.position = "none",
+    title = element_text(size = 10)
+  ) +
+  ggtitle("Grouped by replicates\n")  
+
+ggsave("../Results/R_output/UMAP_RNA_by_rep_stem.svg", height = 3, width = 8, bg = "white")
+ggsave("../Results/R_output/UMAP_RNA_by_rep_stem.png", height = 3, width = 8, bg = "white")
+```
+
+```{r}
+saveRDS(CAA_stem, "../Results/R_output/CAA_stem.Rds")
+CAA_stem <- readRDS("../Results/R_output/CAA_stem.Rds") 
+DefaultAssay(CAA_stem) <- "RNA"
+```
+
+
+
+```{r}
+cluster_counts <- CAA_stem@meta.data %>% 
+  group_by(seurat_clusters) %>% 
+  dplyr::count() %>%
+  ungroup() %>% 
+  mutate(percentage = n / ncol(CAA_stem) * 100)
+
+cluster_counts
+```
+
+```{r}
+cluster_counts_by_rep <- CAA_stem@meta.data %>% 
+  group_by(seurat_clusters, run) %>% 
+  dplyr::count() %>%
+  ungroup() %>% 
+  mutate(percentage = case_when(
+    run == "BO" ~ n / ncol(BO_sub) * 100,
+    run == "BP" ~ n / ncol(BP_sub) * 100
+  ))
+
+cluster_counts_by_rep
+```
+
+```{r}
+cluster_counts_by_rep %>% 
+  mutate(run_1 = case_when(
+    str_detect(run, "BO") ~ "rep1",
+    T ~ "rep2"
+  )) %>% 
+  ggplot(aes(x = run, y = percentage)) +
+  geom_bar(stat = "identity", aes(fill = seurat_clusters), color = "white") + 
+  labs(x = "Replicate", 
+       y = "% of cells",
+       fill = "clusters") +
+  guides(fill = guide_legend(nrow = 2)) +
+  theme_classic() +
+  theme(legend.position = "bottom") +
+  coord_flip()  
+
+ggsave("../Results/R_output/stem_cluster_count.svg", height = 3, width = 8, bg = "white")
+ggsave("../Results/R_output/stem_cluster_count.png", height = 3, width = 8, bg = "white")
+```
+
+# de novo marker genes
+```{r}
+all_makers <- FindAllMarkers(CAA_stem, only.pos = T)
+```
+
+```{r}
+all_makers <- all_makers %>% 
+  filter(p_val_adj < 0.05)
+
+head(all_makers)
+```
+
+## Pull reprentative loci 
+```{r}
+repr_locus <-  read_delim("../Data/caac_v4.hc_gene_models.repr.gtf", 
+    delim = "\t", escape_double = FALSE, 
+    col_names = FALSE, trim_ws = TRUE, skip = 1)
+
+
+repr_locus %>% 
+  filter(str_detect(X9, "nbisL1-mrna-18701"))
+
+repr_locus_nice <- repr_locus %>% 
+  filter(X3 == "gene") %>% 
+  select(X1, X4, X5, X9) %>% 
+  separate(X9, c("gene_id", "ID", "Name"), sep = "; ") %>% 
+  mutate(ID2 = str_extract(ID, "nbisL1-mrna-\\d+")) %>% 
+  mutate(v4_ID = str_sub(Name, start = 7, end = -3)) %>%
+  select(-gene_id, -ID, -Name) %>% 
+  mutate(v4_locus = str_remove(v4_ID, "\\.\\d+$"))
+  
+  
+head(repr_locus_nice)
+```
+## Pull functional annotation 
+```{r}
+func_anno <- read_delim("../Data/caac_v4_anno/caac_v4.functional_annotation.txt", 
+                        delim = "\t", col_names = F)
+
+func_anno <- func_anno %>% 
+  rename(v4_ID = X1)
+head(func_anno)
+```
+## Pull convertion between v3 and v4 IDs 
+```{r}
+v3_v4_convertion <- read_csv("../Results/v3_v4_convertion.csv")
+
+v3_v4_convertion_nice <- v3_v4_convertion %>% 
+  select(qseqid, sseqid) %>% 
+  rename(v3_ID = qseqid) %>% 
+  rename(v4_ID = sseqid) %>% 
+  mutate(v3_ID = str_remove(v3_ID, "\\.\\d+$")) %>% 
+  mutate(v4_locus = str_remove(v4_ID, "\\.\\d+$")) %>% 
+  select(-v4_ID)
+
+head(v3_v4_convertion_nice)
+```
+
+```{r}
+all_makers_nice <- all_makers %>% 
+  left_join(repr_locus_nice, by = c("gene"="ID2")) %>% 
+  left_join(func_anno, by = c("v4_ID"))
+
+head(all_makers_nice)
+
+write_excel_csv(all_makers_nice, "../Results/R_output/stem_de_novo_markers.csv") 
+```
+
+## Check GPPS 
+```{r}
+DefaultAssay(CAA_stem) <- "RNA"
+
+GPPS <- row.names(CAA_stem) %>% 
+  as.data.frame() %>% 
+  dplyr::rename(gene = ".") %>% 
+  left_join(repr_locus_nice, by = c("gene"="ID2")) %>% 
+  left_join(func_anno, by = c("v4_ID")) %>% 
+  filter(str_detect(X2, "geranyl diphosphate synthase|geranylgeranyl reductase"))
+
+GPPS
+```
+```{r}
+DotPlot(CAA_stem, features = GPPS$gene) +
+  coord_flip()
+```
+nbisL1-mrna-20137	Caacu.v4.10G004300.1 is the GPPS small subunit 
+
+# Check pathway genes 
+## Load known genes 
+```{r}
+known_genes <- read_csv("../Data/known_genes_nice_ordered.csv")
+
+head(known_genes)
+```
+
+```{r}
+known_genes_nice <- known_genes %>% 
+  arrange(order2) %>% 
+  filter(is.na(order2) ==F) %>% 
+  dplyr::rename(v4_ID = sseqid) %>% 
+  select(v4_ID, order2, symbol) %>% 
+   rbind(
+    data.frame(
+      v4_ID = "Caacu.v4.10G004300.1",
+      order2 = 10.5,
+      symbol = "GPPS SSU"
+    )
+  ) %>% 
+  inner_join(repr_locus_nice, by = "v4_ID") %>% 
+  distinct(v4_ID, .keep_all = T) %>% 
+  filter(symbol != "GPPS")
+
+head(known_genes_nice)
+```
+ 
+
+## Dot plot 
+```{r}
+DefaultAssay(CAA_stem) <- "RNA"
+known_genes_at_cluster <- DotPlot(CAA_stem, features = rev(known_genes_nice$ID2))
+```
+
+```{r}
+known_heat <- known_genes_at_cluster$data %>% 
+  mutate(internal.tag = row.names(.)) %>% 
+  arrange(internal.tag) %>% 
+  mutate(ID2 = case_when(
+    is.na(features.plot) ~ str_remove_all(internal.tag, "rna_"),
+    T ~ features.plot %>% as.character()
+  )) %>% 
+  left_join(known_genes_nice, by = "ID2") %>%
+  mutate(symbol = reorder(symbol, -order2)) %>% 
+  filter(order2 <= 18) %>% 
+  ggplot(aes(y = symbol, x = id)) +
+  geom_point(aes(size = pct.exp, fill = avg.exp.scaled), shape = 21, color = "white") +
+  scale_fill_viridis(option = "A", begin = 0, end = 0.9) +
+  guides(size = guide_legend(override.aes = list(fill = "grey40"), order = 1)) +
+  labs(x = "Cluster",
+       y = NULL, 
+       fill = "Avg Exp",
+       size = "% Exp") +
+  theme_classic() +
+  theme(text = element_text(color = "black"),
+        axis.text = element_text(color = "black"),
+        axis.text.y.left = element_text(hjust = 0.5, face = "italic"),
+        legend.key.width = unit(0.7, "lines"),
+        legend.key.height = unit(0.7, "lines"),
+        legend.position = "top",
+        legend.box = "vertical")
+
+known_heat
+
+ggsave("../Results/R_output/stem_known_genes_heat.svg", height = 4, width = 4.1)
+ggsave("../Results/R_output/stem_known_genes_heat.png", height = 4, width = 4.1)
+```
+# Check leaf MYBs? 
+Caacu.8G013470.1  
+Caacu.10G002090.1  
+Caacu.18G004810.1  
+Caacu.11G005990.2 
+
+```{r}
+leaf_MYBs <- data.frame(
+  v3_ID = c(
+  "Caacu.8G013470",
+  "Caacu.10G002090",
+  "Caacu.18G004810",
+  "Caacu.11G005990") ) %>% 
+  inner_join(v3_v4_convertion_nice, by = "v3_ID") %>% 
+  left_join(repr_locus_nice, by = "v4_locus")
+  
+leaf_MYBs  
+```
+
+```{r}
+DotPlot(CAA_stem, features = "nbisL1-mrna-28458")$data %>% 
+  mutate(internal.tag = row.names(.)) %>% 
+  arrange(internal.tag) %>% 
+  mutate(ID2 = case_when(
+    is.na(features.plot) ~ str_remove_all(internal.tag, "rna_"),
+    T ~ features.plot %>% as.character()
+  )) %>% 
+  left_join(repr_locus_nice, by = "ID2") %>%
+  ggplot(aes(y = v4_ID, x = id)) +
+  geom_point(aes(size = pct.exp, fill = avg.exp.scaled), shape = 21, color = "white") +
+  scale_fill_viridis(option = "A", begin = 0, end = 0.9) +
+  guides(size = guide_legend(override.aes = list(fill = "grey40"), order = 1)) +
+  labs(x = "Cluster",
+       y = NULL, 
+       fill = "Avg Exp",
+       size = "% Exp") +
+  theme_classic() +
+  theme(text = element_text(color = "black"),
+        axis.text = element_text(color = "black"),
+        axis.text.y.left = element_text(hjust = 0.5),
+        legend.key.width = unit(0.7, "lines"),
+        legend.box = "horizontal")
+
+ggsave("../Results/R_output/leaf_MYBs_at_stem.svg", height = 2, width = 7)
+ggsave("../Results/R_output/leaf_MYBs_at_stem.png", height = 2, width = 7)
+```
+Different regulation operates in leaf vs stem. 
+Leaf: STR+ cells 
+Stem: Lack STR expression, and MEP + iridoid stages are specific to a rare cell cluster. SLS, SLAS and TDC in the same cell cluster as well. 
+
+# Identify cell types 
+```{r}
+stem_markers <- read_csv(file = "../Results/stem_markers.csv") 
+
+stem_markers_2 <- stem_markers %>% 
+  inner_join(repr_locus_nice, by = c("sseqid" =  "v4_ID")) %>% 
+  distinct(ID2, .keep_all = T)
+
+head(stem_markers_2)
+```
+
+```{r}
+stem_marker_candidates <- DotPlot(CAA_stem, features = stem_markers_2$ID2)$data
+```
+
+
+0: 
+Caacu.v4.10G012330.1
+Caacu.v4.7G012370.1 
+
+3:
+Caacu.v4.16G010940.1
+
+7:
+Caacu.v4.15G004490.1 
+Caacu.v4.20G000450.1
+
+8:
+Caacu.v4.4G005670.1
+Caacu.v4.18G001890.1 
+
+9:
+Caacu.v4.2G012620.5
+Caacu.v4.10G003530.2 
+
+
+```{r}
+stem_marker_candidates %>% 
+  inner_join(stem_markers_2, by = c("features.plot" = "ID2")) %>% 
+  ggplot(aes(y = Gene_name, x = id)) +
+  facet_grid(Cell_type~., scales = "free", space = "free") +
+  geom_point(aes(size = pct.exp, fill = avg.exp.scaled), shape = 21, color = "white") +
+  scale_fill_viridis(option = "A", begin = 0, end = 0.9) +
+  guides(size = guide_legend(override.aes = list(fill = "grey40"), order = 1)) +
+  labs(x = "Cluster",
+       y = NULL, 
+       fill = "Avg Exp",
+       size = "% Exp",
+       title = "stem marker genes") +
+  theme_classic() +
+  theme(text = element_text(color = "black"),
+        axis.text = element_text(color = "black"),
+        axis.text.y.left = element_text(hjust = 0.5),
+        legend.key.width = unit(0.7, "lines"),
+        #strip.text = element_blank(),
+        legend.box = "horizontal")
+```
+## Curated 
+```{r}
+curated_markers <- read_excel("../Data/stem_marker_curated.xlsx")
+head(curated_markers)
+```
+
+```{r}
+curated_stem_markers_2 <- curated_markers %>% 
+  inner_join(repr_locus_nice, by = c("gene_ID" =  "v4_ID")) %>% 
+  distinct(ID2, .keep_all = T)
+
+head(curated_stem_markers_2)
+```
+
+```{r}
+stem_marker_curated <- DotPlot(CAA_stem, features = curated_stem_markers_2$ID2)$data %>% 
+  inner_join(curated_stem_markers_2, by = c("features.plot" = "ID2")) %>% 
+  mutate(cell_type = case_when(
+    id %in% c(0, 12, 13, 14) ~ "Photosynthetic",
+    id %in% c(4, 15) ~ "Xylem",
+    id %in% c(6, 18, 19, 20) ~ "Phloem",
+    id %in% c(8) ~ "S phase",
+    id %in% c(9) ~ "Mitosis",
+    id %in% c(21) ~ "Iridoid",
+    T ~ "Other"
+    )) %>% 
+  mutate(cell_type = factor(cell_type, levels = c(
+    "Photosynthetic", "Xylem", "Phloem", "S phase", "Mitosis", "Iridoid", "Other"
+  )))
+
+stem_marker_heat <- stem_marker_curated %>% 
+  ggplot(aes(y = gene_ID, x = id)) +
+  facet_grid(cell_type_order ~ cell_type, scales = "free", space = "free") +
+  geom_point(aes(size = pct.exp, fill = avg.exp.scaled), shape = 21, color = "white") +
+  scale_fill_viridis(option = "A", begin = 0, end = 0.9) +
+  guides(size = guide_legend(override.aes = list(fill = "grey40"), order = 1)) +
+  labs(x = "Cluster",
+       y = NULL, 
+       fill = "Avg Exp",
+       size = "% Exp",
+       title = "Stem marker genes") +
+  theme_classic() +
+  theme(text = element_text(color = "black"),
+        axis.text = element_text(color = "black"),
+        axis.text.y.left = element_text(hjust = 0.5),
+        legend.key.width = unit(0.7, "lines"),
+        legend.key.height = unit(0.7, "lines"),
+        strip.text = element_blank(),
+        legend.position = "top",
+        legend.box = "horizontal")
+```
+
+```{r}
+stem_marker_symbol <- stem_marker_curated %>% 
+  filter(id == 0) %>% 
+  ggplot(aes(x = "", y = gene_ID)) +
+  facet_grid(cell_type_order ~ ., scales = "free", space = "free") +
+  geom_text(aes(label = symbol), fontface = "italic") +
+  labs(x = NULL,
+       y = NULL) +
+  theme_classic() +
+  theme(#text = element_text(color = "black"),
+        axis.text = element_blank(),
+        axis.ticks.x = element_blank(),
+        strip.text = element_blank(),
+        axis.line = element_blank())
+```
+
+```{r}
+stem_color_strip <- stem_marker_curated %>% 
+  ggplot(aes(y = "", x = id)) +
+  facet_grid(. ~ cell_type, scales = "free", space = "free") +
+  geom_tile(aes(fill = cell_type)) +
+  labs(x = NULL,
+       y = NULL,
+       fill = "cell type") + 
+  guides(fill = guide_legend(nrow = 3), order = 1) +
+  scale_fill_manual(values = c(brewer.pal(8, "Set2")[1:3],
+                                brewer.pal(11, "BrBG")[1:2],
+                               brewer.pal(8, "Accent")[5],
+                                "grey80")) +
+  theme_classic() +
+  theme(#text = element_text(color = "black"),
+        axis.text = element_blank(),
+        strip.text = element_blank(),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        legend.position = "bottom")
+
+wrap_plots(stem_marker_heat, stem_marker_symbol, stem_color_strip,
+           design = c("AB
+                       C#"), 
+           heights = c(1, 0.03),
+           widths = c(1, 0.125))
+
+ggsave("../Results/R_output/stem_cell_type_markers.svg", height = 7, width = 8)
+ggsave("../Results/R_output/stem_cell_type_markers.png", height = 7, width = 8)
+```
+## UMAP 2
+```{r}
+caa_stem_cell_types <- data.frame(
+  id = 0:22
+) %>% 
+  mutate(id = factor(id, levels = c(
+    0, 12, 13, 14,
+    4, 15, 
+    6, 18, 19, 20,
+    8,
+    9,
+    21,
+    1, 2, 3, 5, 7, 10, 11, 16, 17, 22
+  ))) %>%
+  mutate(
+    cell_type = case_when(
+    id %in% c(0, 12, 13, 14) ~ "Photosynthetic",
+    id %in% c(4, 15) ~ "Xylem",
+    id %in% c(6, 18, 19, 20) ~ "Phloem",
+    id %in% c(8) ~ "S phase",
+    id %in% c(9) ~ "Mitosis",
+    id %in% c(21) ~ "Iridoid",
+    T ~ "Other")) %>% 
+  mutate(cell_type = factor(cell_type, 
+                            levels = c(
+                              "Photosynthetic",
+                              "Xylem", 
+                             # "Guard cells", 
+                              "Phloem",
+                             "S phase",
+                              "Mitosis",
+                             "Iridoid",
+                              "Other"
+                            )))
+
+caa_stem_cell_types
+```
+
+```{r}
+stem_assignment_graph <- caa_stem_cell_types %>% 
+  ggplot(aes(x = id, y = "")) +
+  facet_wrap(~ cell_type, scales = "free", ncol = 2) +
+  geom_point(size = 4, aes(color = id)) +
+  geom_text(aes(label = id), size = 3.2) +
+  labs(x = NULL,
+       y = NULL) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    panel.grid = element_blank(),
+    text = element_text(color = "black", face = "bold"),
+    axis.text.x = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA)
+    )
+
+stem_assignment_graph
+```
+
+```{r}
+levels(CAA_stem) <- c(
+ 0, 12, 13, 14,
+    4, 15, 
+    6, 18, 19, 20,
+    8,
+    9,
+    21,
+    1, 2, 3, 5, 7, 10, 11, 16, 17, 22
+)
+
+UMAP_RNA2 <- DimPlot(CAA_stem, reduction = "umap", 
+                 label = T, label.size = 5, repel = T) + 
+  theme_void() +
+  theme(
+    text = element_text(size = 14, color = "black", face = "bold"),
+    legend.position = "none"
+  )
+
+wrap_plots(UMAP_RNA2, stem_assignment_graph,
+           nrow = 2, heights = c(1, 0.9))
+
+ggsave("../Results/R_output/UMAP_2_stem.svg", height = 4, width = 3.5, bg = "white")
+ggsave("../Results/R_output/UMAP_2_stem.png", height = 4, width = 3.5, bg = "white")
+```
+# Check TFs 
+## Check BHLH
+```{r}
+bHLH_candidates <- all_makers_nice %>% 
+  filter(cluster %in% c(14, 17, 19, 21)) %>% 
+  filter(str_detect(X2, "bHLH")) %>% 
+  left_join(v3_v4_convertion_nice, by = "v4_locus")
+
+bHLH_candidates
+```
+
+Caacu.v4.4G008460.4 | nbisL1-mrna-9657
+(Caacu.4G008600.3) is ortholog of BIS1/2/3 in Catharanthus. 
+
+```{r}
+CaBIS_clade_heat <- DotPlot(CAA_stem, features = 
+                               c("nbisL1-mrna-9657"))$data  %>% 
+  inner_join(bHLH_candidates, by = c("features.plot" = "gene")) %>% 
+  ggplot(aes(y = v4_ID, x = id)) +
+  geom_point(aes(size = pct.exp, fill = avg.exp.scaled), shape = 21, color = "white") +
+  scale_fill_viridis(option = "A", begin = 0, end = 0.9) +
+  guides(size = guide_legend(override.aes = list(fill = "grey40"), order = 1)) +
+  labs(x = "Cluster",
+       y = NULL, 
+       fill = "Avg Exp",
+       size = "% Exp",
+       title = "BIS clade") +
+  theme_classic() +
+  theme(text = element_text(color = "black"),
+        axis.text = element_text(color = "black"),
+        axis.text.y.left = element_text(hjust = 0.5),
+        legend.key.width = unit(0.7, "lines"),
+        strip.text = element_blank(),
+        legend.box = "horizontal")
+
+CaBIS_clade_heat
+
+ggsave("../Results/R_output/CaBIS_clade.svg", height =  2, width = 7)
+ggsave("../Results/R_output/CaBIS_clade.png", height =  2, width = 7)
+```
+
+## IDM4 clade 
+nbisL1-mrna-5376 -2G
+nbisL1-mrna-34203 -21G
+nbisL1-mrna-29301 -17G
+```{r}
+IDM4_clade <- data.frame(
+  v3_ID = c(
+  "Caacu.20G000670",
+  "Caacu.16G006210",
+  "Caacu.2G015520") ) %>% 
+  inner_join(v3_v4_convertion_nice, by = "v3_ID") %>% 
+  left_join(repr_locus_nice, by = "v4_locus")
+  
+IDM4_clade 
+```
+
+```{r}
+CaIDM4_clade_heat <- DotPlot(CAA_stem, features = IDM4_clade$ID2
+                               )$data  %>%
+  inner_join(IDM4_clade, by = c("features.plot"="ID2")) %>% 
+  ggplot(aes(y = v4_ID, x = id)) +
+  geom_point(aes(size = pct.exp, fill = avg.exp.scaled), shape = 21, color = "white") +
+  scale_fill_viridis(option = "A", begin = 0, end = 0.9) +
+  guides(size = guide_legend(override.aes = list(fill = "grey40"), order = 1)) +
+  labs(x = "Cluster",
+       y = NULL, 
+       fill = "Avg Exp",
+       size = "% Exp",
+       title = "CrIDM4/AtMYB5 clade") +
+  theme_classic() +
+  theme(text = element_text(color = "black"),
+        axis.text = element_text(color = "black"),
+        axis.text.y.left = element_text(hjust = 0.5),
+        legend.key.width = unit(0.7, "lines"),
+        strip.text = element_blank(),
+        legend.box = "horizontal")
+
+CaIDM4_clade_heat
+
+ggsave("../Results/R_output/CaIDM4_clade.svg", height =  3, width = 7)
+ggsave("../Results/R_output/CaIDM4_clade.png", height =  3, width = 7)
+```
+
+
+ 
+## IDM3 clade 
+"Caacu.1G002030.1"  "Caacu.1G020620.1"  "Caacu.S014450.1"   "Caacu.16G001190.3" "Caacu.4G003180.1" 
+"Caacu.8G018100.2"  "Caacu.12G012510.1" "Caacu.3G007010.1"  "Caacu.9G000860.1"  "Caacu.9G000870.1" 
+"Caacu.8G018120.1"  "Caacu.4G003170.1"  "Caacu.12G012490.1" "Caacu.19G011850.1"
+```{r}
+IDM3_clade <- data.frame(
+  v3_ID = c(
+  "Caacu.1G002030", 
+  "Caacu.1G020620" ,
+  "Caacu.S014450",
+  "Caacu.16G001190",
+  "Caacu.4G003180",
+  "Caacu.8G018100",
+  "Caacu.12G012510",
+  "Caacu.3G007010" ,
+  "Caacu.9G000860",
+  "Caacu.9G000870",
+  "Caacu.8G018120",
+  "Caacu.4G003170",
+  "Caacu.12G012490",
+  "Caacu.19G011850") ) %>% 
+  inner_join(v3_v4_convertion_nice, by = "v3_ID") %>% 
+  left_join(repr_locus_nice, by = "v4_locus")
+  
+IDM3_clade 
+```
+
+```{r}
+CaIDM3_clade_heat <- DotPlot(CAA_stem, features = IDM3_clade$ID2 
+                            )$data  %>% 
+  inner_join(IDM3_clade, by = c("features.plot"="ID2")) %>% 
+  ggplot(aes(y = v4_ID, x = id)) +
+  geom_point(aes(size = pct.exp, fill = avg.exp.scaled), shape = 21, color = "white") +
+  scale_fill_viridis(option = "A", begin = 0, end = 0.9) +
+  guides(size = guide_legend(override.aes = list(fill = "grey40"), order = 1)) +
+  labs(x = "Cluster",
+       y = NULL, 
+       fill = "Avg Exp",
+       size = "% Exp",
+       title = "CrIDM1/CrIDM3/AtTT2 clade") +
+  theme_classic() +
+  theme(text = element_text(color = "black"),
+        axis.text = element_text(color = "black"),
+        axis.text.y.left = element_text(hjust = 0.5),
+        legend.key.width = unit(0.7, "lines"),
+        strip.text = element_blank(),
+        legend.box = "horizontal")
+
+CaIDM3_clade_heat
+
+ggsave("../Results/R_output/CaIDM3_clade.svg", height = 3.5, width = 7)
+ggsave("../Results/R_output/CaIDM3_clade.png", height = 3.5, width = 7)
+```
+
+## IDB clade 
+```{r}
+IDB_clade <- data.frame(
+  v3_ID = c(
+  "Caacu.2G012920",
+  "Caacu.2G002990",
+  "Caacu.7G015120") ) %>% 
+  inner_join(v3_v4_convertion_nice, by = "v3_ID") %>% 
+  left_join(repr_locus_nice, by = "v4_locus")
+  
+IDB_clade 
+```
+
+
+```{r}
+IDB_clade_heat <- DotPlot(CAA_stem, features = IDB_clade$ID2)$data  %>% 
+  inner_join(IDB_clade, by = c("features.plot" = "ID2")) %>% 
+  ggplot(aes(y = v4_ID, x = id)) +
+  geom_point(aes(size = pct.exp, fill = avg.exp.scaled), shape = 21, color = "white") +
+  scale_fill_viridis(option = "A", begin = 0, end = 0.9) +
+  guides(size = guide_legend(override.aes = list(fill = "grey40"), order = 1)) +
+  labs(x = "Cluster",
+       y = NULL, 
+       fill = "Avg Exp",
+       size = "% Exp",
+       title = "CrIDB1/AtTT8 clade") +
+  theme_classic() +
+  theme(text = element_text(color = "black"),
+        axis.text = element_text(color = "black"),
+        axis.text.y.left = element_text(hjust = 0.5),
+        legend.key.width = unit(0.7, "lines"),
+        strip.text = element_blank(),
+        legend.box = "horizontal")
+
+IDB_clade_heat
+
+ggsave("../Results/R_output/CaIDB1_clade.svg", height = 2.5, width = 7)
+ggsave("../Results/R_output/CaIDB1_clade.png", height = 2.5, width = 7)
+```
+
+## Consolidate TF dot plots 
+```{r}
+consolidate_TFs <- rbind(
+  bHLH_candidates %>% 
+  filter(str_detect(v4_ID, "Caacu.v4.4G008460.4")) %>% 
+  mutate(clade = "CrBIS\nclade") %>% 
+    mutate(ID2 = gene) %>% 
+    select(v3_ID, v4_locus, ID2, clade, v4_ID),
+
+IDB_clade %>% 
+  mutate(clade = "CaTT8/CrIDB1\nclade")%>% 
+    select(v3_ID, v4_locus, ID2, clade, v4_ID), 
+
+IDM3_clade %>% 
+  mutate(clade = "AtMYB123/CrIDM1\nclade")%>% 
+    select(v3_ID, v4_locus, ID2, clade, v4_ID),
+
+IDM4_clade %>% 
+  mutate(clade = "AtMYB5/CrIDM4\nclade")%>% 
+    select(v3_ID, v4_locus, ID2, clade, v4_ID)
+)
+
+head(consolidate_TFs)
+```
+
+```{r}
+x_labels <- c( "", 
+              "", "", "", "", "", 
+              "", "", "", "", "",
+              "", "", "", "14", "",
+              "", "17", "", "", "",
+              "21", "")
+
+
+DotPlot(CAA_stem, features = consolidate_TFs$ID2)$data  %>% 
+  inner_join(consolidate_TFs, by = c("features.plot" = "ID2")) %>% 
+  mutate(id = factor(id, levels = 0:22)) %>% 
+  mutate(v4_locus_short = str_remove_all(v4_locus, "Caacu.v4.")) %>% 
+  ggplot(aes(y = v4_locus_short, x = id)) +
+  facet_grid(clade ~., scales = "free", space = "free") +
+  geom_point(aes(size = pct.exp, fill = avg.exp.scaled), shape = 21, color = "white") +
+  scale_fill_viridis(option = "A", begin = 0, end = 0.9) +
+  scale_x_discrete(labels = x_labels) +
+  guides(size = guide_legend(override.aes = list(fill = "grey40"), order = 1)) +
+  labs(x = "Cluster",
+       y = NULL, 
+       fill = "Avg Exp",
+       size = "% Exp") +
+  theme_classic() +
+  theme(text = element_text(color = "black"),
+        axis.text = element_text(color = "black"),
+        axis.text.y.left = element_text(hjust = 0.5),
+        legend.key.width = unit(0.7, "lines"),
+        legend.key.height = unit(0.7, "lines"),
+        strip.text = element_text(angle = 0, hjust = 0.5),
+        strip.background = element_rect(color = "grey90"),
+        panel.spacing = unit(0.1, "lines"),
+        legend.box = "vertical",
+        legend.position = "top",
+        title = element_text(size = 10),
+        legend.spacing = unit(0, "lines")
+        )
+
+ggsave("../Results/R_output/coexp_TFs.svg", height = 6, width = 3.5)
+ggsave("../Results/R_output/coexp_TFs.png", height = 6, width = 3.5)
+```
+# Save gene expression matrix 
+```{r}
+stem_gene_exp_matrix <- AverageExpression(CAA_stem, slot = "data")$RNA %>% 
+  as.data.frame() %>% 
+  mutate(ID2 = row.names(.)) %>% 
+  left_join(repr_locus_nice, by = "ID2") %>% 
+  select(v4_ID, 0:22) %>% 
+  dplyr::rename(gene_ID = v4_ID)
+
+head(stem_gene_exp_matrix)
+
+write_excel_csv(stem_gene_exp_matrix, "../Results/R_output/stem_gene_exp_matrix.csv")
+```
+
